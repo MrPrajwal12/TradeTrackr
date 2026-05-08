@@ -32,6 +32,16 @@ const expenseSchema = z.object({
 
 type ExpenseForm = z.infer<typeof expenseSchema>
 
+function toYearMonth(date: string) {
+  // date is stored as YYYY-MM-DD
+  return date.slice(0, 7)
+}
+
+function formatYearMonth(ym: string) {
+  const d = new Date(`${ym}-01T00:00:00`)
+  return d.toLocaleString('default', { month: 'long', year: 'numeric' })
+}
+
 export function ExpensesPage() {
   const { user } = useAuthStore()
   const [expenses, setExpenses] = useState<Expense[]>([])
@@ -41,6 +51,7 @@ export function ExpensesPage() {
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all')
   const [filterCategory, setFilterCategory] = useState('all')
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7))
   const [, setUndoItem] = useState<Expense | null>(null)
 
   const { register, handleSubmit, control, watch, reset, setValue, formState: { errors } } = useForm<ExpenseForm>({
@@ -138,9 +149,28 @@ export function ExpensesPage() {
     return matchSearch && matchType && matchCat
   })
 
-  const totalIncome = expenses.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0)
-  const totalExpense = expenses.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0)
-  const net = totalIncome - totalExpense
+  const overallIncome = expenses.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0)
+  const overallExpense = expenses.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0)
+  const overallNet = overallIncome - overallExpense
+
+  const monthExpenses = expenses.filter(e => toYearMonth(e.date) === selectedMonth)
+  const monthIncome = monthExpenses.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0)
+  const monthExpense = monthExpenses.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0)
+  const monthNet = monthIncome - monthExpense
+
+  const monthMap = new Map<string, { income: number; expense: number }>()
+  for (const e of expenses) {
+    const ym = toYearMonth(e.date)
+    const cur = monthMap.get(ym) ?? { income: 0, expense: 0 }
+    if (e.type === 'income') cur.income += e.amount
+    else cur.expense += e.amount
+    monthMap.set(ym, cur)
+  }
+  const monthRows = Array.from(monthMap.entries())
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([ym, v]) => ({ ym, ...v, net: v.income - v.expense }))
+
+  const monthOptions = Array.from(new Set([selectedMonth, ...monthRows.map(r => r.ym)])).sort((a, b) => b.localeCompare(a))
 
   const allCategories = [...new Set(expenses.map(e => e.category))]
 
@@ -156,42 +186,122 @@ export function ExpensesPage() {
         </Button>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Monthly + Overall Summary */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Monthly summary</p>
+          <p className="text-xs text-muted-foreground">Choose a month to see Income, Expenses, and Net</p>
+        </div>
+        <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+          <SelectTrigger className="w-full sm:w-[220px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {monthOptions.map((ym) => (
+              <SelectItem key={ym} value={ym}>
+                {formatYearMonth(ym)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/30">
-              <TrendingUp className="size-4 text-green-600" />
+          <CardContent className="pt-4 pb-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground">Selected Month</p>
+                <p className="text-sm font-semibold">{formatYearMonth(selectedMonth)}</p>
+              </div>
+              <Badge variant="outline">Monthly</Badge>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Total Income</p>
-              <p className="text-lg font-bold text-green-600">{formatCurrency(totalIncome)}</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Income</p>
+                <p className="text-sm font-bold text-green-600 dark:text-green-400">{formatCurrency(monthIncome)}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Expenses</p>
+                <p className="text-sm font-bold text-destructive">{formatCurrency(monthExpense)}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Net</p>
+                <p className={cn('text-sm font-bold', monthNet >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
+                  {formatCurrency(monthNet)}
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
+
         <Card>
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-red-100 dark:bg-red-900/30">
-              <TrendingDown className="size-4 text-destructive" />
+          <CardContent className="pt-4 pb-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground">Overall</p>
+                <p className="text-sm font-semibold">All time totals</p>
+              </div>
+              <Badge variant="secondary">Overall</Badge>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Total Expenses</p>
-              <p className="text-lg font-bold text-destructive">{formatCurrency(totalExpense)}</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className={cn('flex size-9 items-center justify-center rounded-lg', net >= 0 ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-orange-100 dark:bg-orange-900/30')}>
-              <TrendingUp className={cn('size-4', net >= 0 ? 'text-blue-600' : 'text-orange-600')} />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Net Balance</p>
-              <p className={cn('text-lg font-bold', net >= 0 ? 'text-blue-600' : 'text-orange-600')}>{formatCurrency(net)}</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Income</p>
+                <p className="text-sm font-bold text-green-600 dark:text-green-400">{formatCurrency(overallIncome)}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Expenses</p>
+                <p className="text-sm font-bold text-destructive">{formatCurrency(overallExpense)}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-[11px] text-muted-foreground">Net</p>
+                <p className={cn('text-sm font-bold', overallNet >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
+                  {formatCurrency(overallNet)}
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
       </div>
+
+      {/* Month-wise totals list */}
+      <Card>
+        <CardContent className="pt-4 pb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-medium">Month-wise totals</p>
+              <p className="text-xs text-muted-foreground">Income / Expenses / Net by month</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {monthRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No data yet.</p>
+            ) : (
+              monthRows.slice(0, 12).map((r) => (
+                <button
+                  key={r.ym}
+                  type="button"
+                  onClick={() => setSelectedMonth(r.ym)}
+                  className={cn(
+                    "w-full flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors hover:bg-muted/40",
+                    r.ym === selectedMonth && "border-primary/40 bg-primary/5"
+                  )}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{formatYearMonth(r.ym)}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Income {formatCurrency(r.income)} • Expenses {formatCurrency(r.expense)}
+                    </p>
+                  </div>
+                  <div className={cn("text-sm font-semibold", r.net >= 0 ? "text-blue-600 dark:text-blue-400" : "text-orange-600 dark:text-orange-400")}>
+                    {formatCurrency(r.net)}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
@@ -224,6 +334,43 @@ export function ExpensesPage() {
             {allCategories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
           </SelectContent>
         </Select>
+      </div>
+
+      {/* Overall Summary Cards (kept for quick glance) */}
+      <div className="hidden">
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/30">
+              <TrendingUp className="size-4 text-green-600" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total Income</p>
+              <p className="text-lg font-bold text-green-600">{formatCurrency(overallIncome)}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-red-100 dark:bg-red-900/30">
+              <TrendingDown className="size-4 text-destructive" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total Expenses</p>
+              <p className="text-lg font-bold text-destructive">{formatCurrency(overallExpense)}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className={cn('flex size-9 items-center justify-center rounded-lg', overallNet >= 0 ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-orange-100 dark:bg-orange-900/30')}>
+              <TrendingUp className={cn('size-4', overallNet >= 0 ? 'text-blue-600' : 'text-orange-600')} />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Net Balance</p>
+              <p className={cn('text-lg font-bold', overallNet >= 0 ? 'text-blue-600' : 'text-orange-600')}>{formatCurrency(overallNet)}</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Table */}
@@ -347,15 +494,15 @@ export function ExpensesPage() {
 
       {/* Add/Edit Sheet */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-full sm:max-w-md">
+        <SheetContent className="w-full sm:max-w-md px-4 sm:px-6">
           <SheetHeader>
             <SheetTitle>{editingExpense ? 'Edit Transaction' : 'Add Transaction'}</SheetTitle>
             <SheetDescription>Enter the transaction details below</SheetDescription>
           </SheetHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-5">
+          <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-4">
             <div className="space-y-2">
               <Label>Date</Label>
-              <Input type="date" {...register('date')} aria-invalid={!!errors.date} />
+              <Input className="w-full" type="date" {...register('date')} aria-invalid={!!errors.date} />
               {errors.date && <p className="text-xs text-destructive">{errors.date.message}</p>}
             </div>
 
@@ -366,7 +513,9 @@ export function ExpensesPage() {
                 control={control}
                 render={({ field }) => (
                   <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger aria-invalid={!!errors.type}><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-full" aria-invalid={!!errors.type}>
+                      <SelectValue />
+                    </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="income">Income</SelectItem>
                       <SelectItem value="expense">Expense</SelectItem>
@@ -383,7 +532,9 @@ export function ExpensesPage() {
                 control={control}
                 render={({ field }) => (
                   <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
                     <SelectContent>
                       {(watchType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => (
                         <SelectItem key={c} value={c}>{c}</SelectItem>
@@ -397,6 +548,7 @@ export function ExpensesPage() {
             <div className="space-y-2">
               <Label>Amount (₹)</Label>
               <Input
+                className="w-full"
                 type="number"
                 step="0.01"
                 placeholder="0.00"
@@ -408,16 +560,21 @@ export function ExpensesPage() {
 
             <div className="space-y-2">
               <Label>Description (optional)</Label>
-              <Input placeholder="Enter description..." {...register('description')} />
+              <Input className="w-full" placeholder="Enter description..." {...register('description')} />
             </div>
 
-            <Separator />
+            <Separator className="my-1" />
 
-            <div className="flex gap-3">
-              <Button type="button" variant="outline" className="flex-1" onClick={() => setSheetOpen(false)}>
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:flex-1"
+                onClick={() => setSheetOpen(false)}
+              >
                 <X className="size-4 mr-2" /> Cancel
               </Button>
-              <Button type="submit" className="flex-1">
+              <Button type="submit" className="w-full sm:flex-1">
                 {editingExpense ? 'Update' : 'Add'} Transaction
               </Button>
             </div>
