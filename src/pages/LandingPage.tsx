@@ -28,17 +28,23 @@ export function LandingPage() {
     <div className="min-h-svh bg-background flex flex-col">
       {/* Nav */}
       <nav className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="flex size-8 items-center justify-center rounded-lg bg-primary">
               <Zap className="size-4 text-primary-foreground" />
             </div>
-            <span className="text-lg font-bold tracking-tight">TradeTrackr</span>
+            <span className="text-base sm:text-lg font-bold tracking-tight truncate">TradeTrackr</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             <ModeToggle />
-            <Button variant="ghost" size="sm" onClick={() => navigate('/auth')}>Sign In</Button>
-            <Button size="sm" onClick={() => navigate('/auth')}>Get Started <ArrowRight className="ml-1 size-3.5" /></Button>
+            <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => navigate('/auth')}>
+              Sign In
+            </Button>
+            <Button size="sm" className="gap-1.5 px-3" onClick={() => navigate('/auth')}>
+              <span className="hidden sm:inline">Get Started</span>
+              <span className="sm:hidden">Start</span>
+              <ArrowRight className="size-3.5" />
+            </Button>
           </div>
         </div>
       </nav>

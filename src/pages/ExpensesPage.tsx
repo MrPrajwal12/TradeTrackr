@@ -236,53 +236,111 @@ export function ExpensesPage() {
               <p className="text-sm">No transactions found. Add your first transaction!</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50">
-                    <th className="text-left px-4 py-3 font-medium text-muted-foreground">Date</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Type</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Category</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground">Amount</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Description</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Source</th>
-                    <th className="px-3 py-3 w-[80px]"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map(expense => (
-                    <tr key={expense.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
-                        {new Date(expense.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge variant={expense.type === 'income' ? 'default' : 'secondary'} className={cn('text-xs', expense.type === 'income' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0' : '')}>
-                          {expense.type === 'income' ? '↑ Income' : '↓ Expense'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 font-medium">{expense.category}</td>
-                      <td className={cn('px-3 py-3 text-right font-semibold', expense.type === 'income' ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
-                        {expense.type === 'income' ? '+' : '-'}{formatCurrency(expense.amount)}
-                      </td>
-                      <td className="px-3 py-3 text-muted-foreground max-w-[200px] truncate">{expense.description || '—'}</td>
-                      <td className="px-3 py-3">
-                        <Badge variant="outline" className="text-xs">{expense.source}</Badge>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <button onClick={() => handleEdit(expense)} className="text-muted-foreground hover:text-foreground transition-colors">
-                            <Edit2 className="size-3.5" />
-                          </button>
-                          <button onClick={() => handleDelete(expense)} className="text-muted-foreground hover:text-destructive transition-colors">
-                            <Trash2 className="size-3.5" />
-                          </button>
+            <>
+              {/* Mobile cards */}
+              <div className="md:hidden divide-y">
+                {filtered.map((expense) => (
+                  <div key={expense.id} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{expense.category}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(expense.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
+                          {expense.description ? ` • ${expense.description}` : ''}
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant={expense.type === 'income' ? 'default' : 'secondary'}
+                            className={cn(
+                              'text-xs',
+                              expense.type === 'income'
+                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0'
+                                : ''
+                            )}
+                          >
+                            {expense.type === 'income' ? '↑ Income' : '↓ Expense'}
+                          </Badge>
+                          <Badge variant="outline" className="text-xs">
+                            {expense.source}
+                          </Badge>
                         </div>
-                      </td>
+                      </div>
+
+                      <div className="shrink-0 text-right">
+                        <p
+                          className={cn(
+                            'text-sm font-semibold',
+                            expense.type === 'income'
+                              ? 'text-green-600 dark:text-green-400'
+                              : 'text-destructive'
+                          )}
+                        >
+                          {expense.type === 'income' ? '+' : '-'}
+                          {formatCurrency(expense.amount)}
+                        </p>
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => handleEdit(expense)}>
+                            <Edit2 className="size-4" />
+                          </Button>
+                          <Button variant="destructive" size="sm" className="h-8 px-2" onClick={() => handleDelete(expense)}>
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50">
+                      <th className="text-left px-4 py-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground">Category</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground">Amount</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground">Description</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground">Source</th>
+                      <th className="px-3 py-3 w-[80px]"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {filtered.map(expense => (
+                      <tr key={expense.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                          {new Date(expense.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge variant={expense.type === 'income' ? 'default' : 'secondary'} className={cn('text-xs', expense.type === 'income' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0' : '')}>
+                            {expense.type === 'income' ? '↑ Income' : '↓ Expense'}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-3 font-medium">{expense.category}</td>
+                        <td className={cn('px-3 py-3 text-right font-semibold', expense.type === 'income' ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
+                          {expense.type === 'income' ? '+' : '-'}{formatCurrency(expense.amount)}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground max-w-[200px] truncate">{expense.description || '—'}</td>
+                        <td className="px-3 py-3">
+                          <Badge variant="outline" className="text-xs">{expense.source}</Badge>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => handleEdit(expense)} className="text-muted-foreground hover:text-foreground transition-colors">
+                              <Edit2 className="size-3.5" />
+                            </button>
+                            <button onClick={() => handleDelete(expense)} className="text-muted-foreground hover:text-destructive transition-colors">
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

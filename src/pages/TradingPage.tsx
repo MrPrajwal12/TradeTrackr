@@ -249,122 +249,221 @@ export function TradingPage() {
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50">
-                    <th className="text-left px-4 py-3 font-medium text-muted-foreground whitespace-nowrap w-[110px]">Date</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[70px]">Day</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[110px]">Type</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Daily Target</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Actual P/L</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Cumulative</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Capital</th>
-                    <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[110px]">Loss Guard</th>
-                    <th className="text-left px-3 py-3 font-medium text-muted-foreground min-w-[150px]">Notes</th>
-                    <th className="px-3 py-3 w-[60px]"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((entry) => {
-                    const isEditing = editingId === (entry.id ?? entry.date)
-                    const rowClass = getRowColor(entry.actual_pl ?? null, entry.daily_target_inr, entry.day_type)
-                    const isToday = entry.date === new Date().toISOString().slice(0, 10)
+            <>
+              {/* Mobile cards */}
+              <div className="md:hidden divide-y">
+                {entries.map((entry) => {
+                  const isEditing = editingId === (entry.id ?? entry.date)
+                  const isToday = entry.date === new Date().toISOString().slice(0, 10)
+                  const plClass =
+                    entry.actual_pl == null
+                      ? "text-muted-foreground"
+                      : entry.actual_pl >= 0
+                        ? "text-green-600 dark:text-green-400"
+                        : "text-destructive"
 
-                    return (
-                      <tr
-                        key={entry.date}
-                        className={cn(
-                          'border-b border-border/50 transition-colors',
-                          rowClass,
-                          isToday && 'ring-1 ring-inset ring-primary/30',
-                          entry.day_type !== 'Trading Day' && 'opacity-60'
+                  return (
+                    <div key={entry.date} className={cn("p-4", entry.day_type !== "Trading Day" && "opacity-70")}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className={cn("text-sm font-semibold", isToday && "text-primary")}>
+                              {new Date(entry.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
+                            </p>
+                            {isToday ? (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1">
+                                Today
+                              </Badge>
+                            ) : null}
+                            <Badge
+                              variant={entry.day_type === "Trading Day" ? "outline" : "secondary"}
+                              className={cn("text-[10px] h-4 px-1", entry.day_type === "Trading Day" && "border-primary/30")}
+                            >
+                              {entry.day_type === "Trading Day" ? "Trading" : entry.day_type}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {entry.weekday} • Target {entry.day_type === "Trading Day" ? formatCurrency(entry.daily_target_inr) : "—"} • Loss guard{" "}
+                            {formatCurrency(entry.daily_loss_allowed)}
+                          </p>
+                        </div>
+
+                        <div className="shrink-0 text-right">
+                          <p className={cn("text-sm font-bold", plClass)}>
+                            {entry.day_type === "Trading Day"
+                              ? entry.actual_pl != null
+                                ? formatCurrency(entry.actual_pl)
+                                : "—"
+                              : "—"}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Capital {formatCurrency(entry.running_capital)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3">
+                        {isEditing ? (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <Input
+                                type="number"
+                                value={editPL}
+                                onChange={(e) => setEditPL(e.target.value)}
+                                className="h-9"
+                                placeholder="P/L"
+                                autoFocus
+                              />
+                              <Input
+                                value={editNotes}
+                                onChange={(e) => setEditNotes(e.target.value)}
+                                className="h-9"
+                                placeholder="Notes"
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <Button className="flex-1" onClick={() => saveEdit(entry)}>
+                                <Check className="size-4 mr-2" /> Save
+                              </Button>
+                              <Button variant="outline" className="flex-1" onClick={() => setEditingId(null)}>
+                                <X className="size-4 mr-2" /> Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs text-muted-foreground truncate flex-1">{entry.notes || "No notes"}</p>
+                            {entry.day_type === "Trading Day" ? (
+                              <Button variant="outline" size="sm" className="h-8" onClick={() => startEdit(entry)}>
+                                <Edit2 className="size-4 mr-2" /> Edit
+                              </Button>
+                            ) : null}
+                          </div>
                         )}
-                      >
-                        <td className="px-4 py-3 font-medium whitespace-nowrap">
-                          <span className={cn(isToday && 'text-primary font-bold')}>
-                            {new Date(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                          </span>
-                          {isToday && <Badge variant="outline" className="ml-1.5 text-[10px] h-4 px-1">Today</Badge>}
-                        </td>
-                        <td className="px-3 py-3 text-muted-foreground">{entry.weekday}</td>
-                        <td className="px-3 py-3">
-                          <Badge
-                            variant={entry.day_type === 'Trading Day' ? 'outline' : 'secondary'}
-                            className={cn('text-xs', entry.day_type === 'Trading Day' && 'border-primary/30')}
-                          >
-                            {entry.day_type === 'Trading Day' ? 'Trading' : entry.day_type}
-                          </Badge>
-                        </td>
-                        <td className="px-3 py-3 text-right text-muted-foreground">
-                          {entry.day_type === 'Trading Day' ? formatCurrency(entry.daily_target_inr) : '—'}
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          {isEditing ? (
-                            <Input
-                              type="number"
-                              value={editPL}
-                              onChange={e => setEditPL(e.target.value)}
-                              className="h-7 w-24 text-right text-xs ml-auto"
-                              autoFocus
-                            />
-                          ) : entry.day_type === 'Trading Day' ? (
-                            <span className={cn(
-                              'font-semibold',
-                              entry.actual_pl == null ? 'text-muted-foreground' :
-                              entry.actual_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
-                            )}>
-                              {entry.actual_pl != null ? formatCurrency(entry.actual_pl) : '—'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50">
+                      <th className="text-left px-4 py-3 font-medium text-muted-foreground whitespace-nowrap w-[110px]">Date</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[70px]">Day</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[110px]">Type</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Daily Target</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Actual P/L</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Cumulative</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Capital</th>
+                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[110px]">Loss Guard</th>
+                      <th className="text-left px-3 py-3 font-medium text-muted-foreground min-w-[150px]">Notes</th>
+                      <th className="px-3 py-3 w-[60px]"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((entry) => {
+                      const isEditing = editingId === (entry.id ?? entry.date)
+                      const rowClass = getRowColor(entry.actual_pl ?? null, entry.daily_target_inr, entry.day_type)
+                      const isToday = entry.date === new Date().toISOString().slice(0, 10)
+
+                      return (
+                        <tr
+                          key={entry.date}
+                          className={cn(
+                            'border-b border-border/50 transition-colors',
+                            rowClass,
+                            isToday && 'ring-1 ring-inset ring-primary/30',
+                            entry.day_type !== 'Trading Day' && 'opacity-60'
+                          )}
+                        >
+                          <td className="px-4 py-3 font-medium whitespace-nowrap">
+                            <span className={cn(isToday && 'text-primary font-bold')}>
+                              {new Date(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                             </span>
-                          ) : '—'}
-                        </td>
-                        <td className="px-3 py-3 text-right font-medium">
-                          <span className={cn(entry.cumulative_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
-                            {formatCurrency(entry.cumulative_pl)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-right font-medium">
-                          {formatCurrency(entry.running_capital)}
-                        </td>
-                        <td className="px-3 py-3 text-right text-muted-foreground text-xs">
-                          {formatCurrency(entry.daily_loss_allowed)}
-                        </td>
-                        <td className="px-3 py-3">
-                          {isEditing ? (
-                            <Input
-                              value={editNotes}
-                              onChange={e => setEditNotes(e.target.value)}
-                              className="h-7 text-xs"
-                              placeholder="Notes..."
-                            />
-                          ) : (
-                            <span className="text-xs text-muted-foreground truncate max-w-[180px] block">{entry.notes || ''}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
-                          {entry.day_type === 'Trading Day' && (
-                            isEditing ? (
-                              <div className="flex gap-1">
-                                <button onClick={() => saveEdit(entry)} className="text-green-500 hover:text-green-600">
-                                  <Check className="size-4" />
-                                </button>
-                                <button onClick={() => setEditingId(null)} className="text-muted-foreground hover:text-foreground">
-                                  <X className="size-4" />
-                                </button>
-                              </div>
+                            {isToday && <Badge variant="outline" className="ml-1.5 text-[10px] h-4 px-1">Today</Badge>}
+                          </td>
+                          <td className="px-3 py-3 text-muted-foreground">{entry.weekday}</td>
+                          <td className="px-3 py-3">
+                            <Badge
+                              variant={entry.day_type === 'Trading Day' ? 'outline' : 'secondary'}
+                              className={cn('text-xs', entry.day_type === 'Trading Day' && 'border-primary/30')}
+                            >
+                              {entry.day_type === 'Trading Day' ? 'Trading' : entry.day_type}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-3 text-right text-muted-foreground">
+                            {entry.day_type === 'Trading Day' ? formatCurrency(entry.daily_target_inr) : '—'}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            {isEditing ? (
+                              <Input
+                                type="number"
+                                value={editPL}
+                                onChange={e => setEditPL(e.target.value)}
+                                className="h-7 w-24 text-right text-xs ml-auto"
+                                autoFocus
+                              />
+                            ) : entry.day_type === 'Trading Day' ? (
+                              <span className={cn(
+                                'font-semibold',
+                                entry.actual_pl == null ? 'text-muted-foreground' :
+                                entry.actual_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
+                              )}>
+                                {entry.actual_pl != null ? formatCurrency(entry.actual_pl) : '—'}
+                              </span>
+                            ) : '—'}
+                          </td>
+                          <td className="px-3 py-3 text-right font-medium">
+                            <span className={cn(entry.cumulative_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
+                              {formatCurrency(entry.cumulative_pl)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-right font-medium">
+                            {formatCurrency(entry.running_capital)}
+                          </td>
+                          <td className="px-3 py-3 text-right text-muted-foreground text-xs">
+                            {formatCurrency(entry.daily_loss_allowed)}
+                          </td>
+                          <td className="px-3 py-3">
+                            {isEditing ? (
+                              <Input
+                                value={editNotes}
+                                onChange={e => setEditNotes(e.target.value)}
+                                className="h-7 text-xs"
+                                placeholder="Notes..."
+                              />
                             ) : (
-                              <button onClick={() => startEdit(entry)} className="text-muted-foreground hover:text-foreground transition-colors">
-                                <Edit2 className="size-3.5" />
-                              </button>
-                            )
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                              <span className="text-xs text-muted-foreground truncate max-w-[180px] block">{entry.notes || ''}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            {entry.day_type === 'Trading Day' && (
+                              isEditing ? (
+                                <div className="flex gap-1">
+                                  <button onClick={() => saveEdit(entry)} className="text-green-500 hover:text-green-600">
+                                    <Check className="size-4" />
+                                  </button>
+                                  <button onClick={() => setEditingId(null)} className="text-muted-foreground hover:text-foreground">
+                                    <X className="size-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button onClick={() => startEdit(entry)} className="text-muted-foreground hover:text-foreground transition-colors">
+                                  <Edit2 className="size-3.5" />
+                                </button>
+                              )
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

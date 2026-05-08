@@ -131,8 +131,13 @@ export function AppLayout() {
           </button>
           <div className="flex-1" />
           <div className="flex items-center gap-2">
-            <Button size="sm" className="gap-1.5 h-8" onClick={() => navigate('/trading')}>
-              <Plus className="size-3.5" />
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 sm:px-3"
+              onClick={() => navigate('/trading')}
+              aria-label="Add trade"
+            >
+              <Plus className="size-4" />
               <span className="hidden sm:inline">Add Trade</span>
             </Button>
             <Button variant="ghost" size="icon" className="size-8 relative">
