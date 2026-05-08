@@ -1,0 +1,371 @@
+import { useEffect, useState, useCallback } from 'react'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod/v4'
+import { toast } from 'sonner'
+import { Plus, Search, ListFilter as Filter, Trash2, CreditCard as Edit2, X, TrendingUp, TrendingDown } from 'lucide-react'
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Separator } from '@/components/ui/separator'
+import { useAuthStore } from '@/store/authStore'
+import { supabase } from '@/lib/supabase'
+import { formatCurrency } from '@/lib/trading-utils'
+import { cn } from '@/lib/utils'
+import type { Expense } from '@/lib/supabase'
+
+const EXPENSE_CATEGORIES = ['Food', 'Transport', 'Housing', 'Utilities', 'Healthcare', 'Entertainment', 'Shopping', 'Education', 'Trading P/L', 'Brokerage Fees', 'Other']
+const INCOME_CATEGORIES = ['Salary', 'Freelance', 'Trading Profit', 'Dividends', 'Other Income']
+
+const expenseSchema = z.object({
+  date: z.string().min(1, 'Date is required'),
+  type: z.enum(['income', 'expense']),
+  category: z.string().min(1, 'Category is required'),
+  amount: z.number().positive('Amount must be positive'),
+  description: z.string().optional(),
+})
+
+type ExpenseForm = z.infer<typeof expenseSchema>
+
+export function ExpensesPage() {
+  const { user } = useAuthStore()
+  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [loading, setLoading] = useState(true)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null)
+  const [search, setSearch] = useState('')
+  const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all')
+  const [filterCategory, setFilterCategory] = useState('all')
+  const [, setUndoItem] = useState<Expense | null>(null)
+
+  const { register, handleSubmit, control, watch, reset, setValue, formState: { errors } } = useForm<ExpenseForm>({
+    resolver: zodResolver(expenseSchema),
+    defaultValues: {
+      date: new Date().toISOString().slice(0, 10),
+      type: 'expense',
+      category: 'Other',
+      description: '',
+    },
+  })
+
+  const watchType = watch('type')
+
+  const loadExpenses = useCallback(async () => {
+    if (!user) return
+    setLoading(true)
+    const { data } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('is_deleted', false)
+      .order('date', { ascending: false })
+    setExpenses(data || [])
+    setLoading(false)
+  }, [user])
+
+  useEffect(() => { loadExpenses() }, [loadExpenses])
+
+  const onSubmit = async (data: ExpenseForm) => {
+    if (!user) return
+
+    if (editingExpense) {
+      const { error } = await supabase.from('expenses').update(data).eq('id', editingExpense.id)
+      if (error) {
+        toast.error(error.message)
+        return
+      }
+      toast.success('Expense updated!')
+    } else {
+      const { error } = await supabase.from('expenses').insert({ ...data, user_id: user.id })
+      if (error) {
+        toast.error(error.message)
+        return
+      }
+      toast.success('Expense added!')
+    }
+
+    reset({ date: new Date().toISOString().slice(0, 10), type: 'expense', category: 'Other', description: '' })
+    setEditingExpense(null)
+    setSheetOpen(false)
+    loadExpenses()
+  }
+
+  const handleDelete = async (expense: Expense) => {
+    const { error } = await supabase.from('expenses').update({ is_deleted: true }).eq('id', expense.id)
+    if (error) {
+      toast.error(error.message)
+      return
+    }
+    setUndoItem(expense)
+    setExpenses(prev => prev.filter(e => e.id !== expense.id))
+    const toastId = toast.warning('Expense deleted', {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const { error: undoError } = await supabase.from('expenses').update({ is_deleted: false }).eq('id', expense.id)
+          if (undoError) {
+            toast.error(undoError.message)
+            return
+          }
+          setUndoItem(null)
+          loadExpenses()
+          toast.dismiss(toastId)
+        },
+      },
+      duration: 5000,
+    })
+  }
+
+  const handleEdit = (expense: Expense) => {
+    setEditingExpense(expense)
+    setValue('date', expense.date)
+    setValue('type', expense.type)
+    setValue('category', expense.category)
+    setValue('amount', expense.amount)
+    setValue('description', expense.description || '')
+    setSheetOpen(true)
+  }
+
+  const filtered = expenses.filter(e => {
+    const matchSearch = search === '' || e.description?.toLowerCase().includes(search.toLowerCase()) || e.category.toLowerCase().includes(search.toLowerCase())
+    const matchType = filterType === 'all' || e.type === filterType
+    const matchCat = filterCategory === 'all' || e.category === filterCategory
+    return matchSearch && matchType && matchCat
+  })
+
+  const totalIncome = expenses.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0)
+  const totalExpense = expenses.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0)
+  const net = totalIncome - totalExpense
+
+  const allCategories = [...new Set(expenses.map(e => e.category))]
+
+  return (
+    <div className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Expenses & Income</h1>
+          <p className="text-sm text-muted-foreground">Track all your personal finance entries</p>
+        </div>
+        <Button onClick={() => { setEditingExpense(null); reset({ date: new Date().toISOString().slice(0,10), type: 'expense', category: 'Other', description: '' }); setSheetOpen(true) }}>
+          <Plus className="size-4 mr-2" /> Add Transaction
+        </Button>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/30">
+              <TrendingUp className="size-4 text-green-600" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total Income</p>
+              <p className="text-lg font-bold text-green-600">{formatCurrency(totalIncome)}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-red-100 dark:bg-red-900/30">
+              <TrendingDown className="size-4 text-destructive" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total Expenses</p>
+              <p className="text-lg font-bold text-destructive">{formatCurrency(totalExpense)}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className={cn('flex size-9 items-center justify-center rounded-lg', net >= 0 ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-orange-100 dark:bg-orange-900/30')}>
+              <TrendingUp className={cn('size-4', net >= 0 ? 'text-blue-600' : 'text-orange-600')} />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Net Balance</p>
+              <p className={cn('text-lg font-bold', net >= 0 ? 'text-blue-600' : 'text-orange-600')}>{formatCurrency(net)}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <Input
+            placeholder="Search transactions..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <Select value={filterType} onValueChange={(v) => setFilterType(v as 'all' | 'income' | 'expense')}>
+          <SelectTrigger className="w-[130px]">
+            <Filter className="size-3.5 mr-2 text-muted-foreground" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            <SelectItem value="income">Income</SelectItem>
+            <SelectItem value="expense">Expense</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={filterCategory} onValueChange={setFilterCategory}>
+          <SelectTrigger className="w-[150px]">
+            <SelectValue placeholder="Category" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Categories</SelectItem>
+            {allCategories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="p-6 space-y-3">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
+          ) : filtered.length === 0 ? (
+            <div className="p-12 text-center text-muted-foreground">
+              <p className="text-sm">No transactions found. Add your first transaction!</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/50">
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground">Date</th>
+                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Type</th>
+                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Category</th>
+                    <th className="text-right px-3 py-3 font-medium text-muted-foreground">Amount</th>
+                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Description</th>
+                    <th className="text-left px-3 py-3 font-medium text-muted-foreground">Source</th>
+                    <th className="px-3 py-3 w-[80px]"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map(expense => (
+                    <tr key={expense.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                        {new Date(expense.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
+                      </td>
+                      <td className="px-3 py-3">
+                        <Badge variant={expense.type === 'income' ? 'default' : 'secondary'} className={cn('text-xs', expense.type === 'income' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0' : '')}>
+                          {expense.type === 'income' ? '↑ Income' : '↓ Expense'}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-3 font-medium">{expense.category}</td>
+                      <td className={cn('px-3 py-3 text-right font-semibold', expense.type === 'income' ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
+                        {expense.type === 'income' ? '+' : '-'}{formatCurrency(expense.amount)}
+                      </td>
+                      <td className="px-3 py-3 text-muted-foreground max-w-[200px] truncate">{expense.description || '—'}</td>
+                      <td className="px-3 py-3">
+                        <Badge variant="outline" className="text-xs">{expense.source}</Badge>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <button onClick={() => handleEdit(expense)} className="text-muted-foreground hover:text-foreground transition-colors">
+                            <Edit2 className="size-3.5" />
+                          </button>
+                          <button onClick={() => handleDelete(expense)} className="text-muted-foreground hover:text-destructive transition-colors">
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Add/Edit Sheet */}
+      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+        <SheetContent className="w-full sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle>{editingExpense ? 'Edit Transaction' : 'Add Transaction'}</SheetTitle>
+            <SheetDescription>Enter the transaction details below</SheetDescription>
+          </SheetHeader>
+          <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-5">
+            <div className="space-y-2">
+              <Label>Date</Label>
+              <Input type="date" {...register('date')} aria-invalid={!!errors.date} />
+              {errors.date && <p className="text-xs text-destructive">{errors.date.message}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Controller
+                name="type"
+                control={control}
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger aria-invalid={!!errors.type}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="income">Income</SelectItem>
+                      <SelectItem value="expense">Expense</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Category</Label>
+              <Controller
+                name="category"
+                control={control}
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(watchType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Amount (₹)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                {...register('amount', { valueAsNumber: true })}
+                aria-invalid={!!errors.amount}
+              />
+              {errors.amount && <p className="text-xs text-destructive">{errors.amount.message}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Description (optional)</Label>
+              <Input placeholder="Enter description..." {...register('description')} />
+            </div>
+
+            <Separator />
+
+            <div className="flex gap-3">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => setSheetOpen(false)}>
+                <X className="size-4 mr-2" /> Cancel
+              </Button>
+              <Button type="submit" className="flex-1">
+                {editingExpense ? 'Update' : 'Add'} Transaction
+              </Button>
+            </div>
+          </form>
+        </SheetContent>
+      </Sheet>
+    </div>
+  )
+}
