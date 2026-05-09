@@ -4,10 +4,66 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TradeTrackr: Trading &amp; Finance Tracker</title>
-    <meta property="og:image" content="https://bolt.new/static/og_default.png">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:image" content="https://bolt.new/static/og_default.png">
+    <title>TradeTrackr — Trading Journal &amp; Expense Tracker with AI</title>
+    <meta
+      name="description"
+      content="Track trades, P&amp;L, win rate, capital and expenses in one dashboard. Secure Google/OTP login, analytics, and AI insights for smarter trading decisions."
+    />
+    <meta name="robots" content="index,follow" />
+
+    <!-- Canonical (set dynamically for SPA deploy domains) -->
+    <link rel="canonical" href="/" id="canonical-link" />
+    <script>
+      (function () {
+        try {
+          var origin = window.location.origin;
+          var canonical = document.getElementById("canonical-link");
+          if (canonical) canonical.setAttribute("href", origin + "/");
+        } catch (e) {}
+      })();
+    </script>
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="TradeTrackr" />
+    <meta property="og:title" content="TradeTrackr — Trading Journal &amp; Expense Tracker with AI" />
+    <meta
+      property="og:description"
+      content="Track trades, P&amp;L, win rate, capital and expenses in one dashboard. Secure Google/OTP login, analytics, and AI insights."
+    />
+    <meta property="og:url" content="/" id="og-url" />
+    <meta property="og:image" content="/favicon.svg" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="TradeTrackr — Trading Journal &amp; Expense Tracker with AI" />
+    <meta
+      name="twitter:description"
+      content="Track trades, P&amp;L, win rate, capital and expenses. Secure login + analytics + AI insights."
+    />
+    <meta name="twitter:image" content="/favicon.svg" />
+    <script>
+      (function () {
+        try {
+          var origin = window.location.origin;
+          var ogUrl = document.getElementById("og-url");
+          if (ogUrl) ogUrl.setAttribute("content", origin + "/");
+        } catch (e) {}
+      })();
+    </script>
+
+    <!-- JSON-LD -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "TradeTrackr",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "description": "Trading journal and expense tracker with analytics and AI insights.",
+        "url": "/"
+      }
+    </script>
 </head>
   <body>
     <div id="root"></div>
