@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>/</loc></url>
-  <url><loc>/auth</loc></url>
-  <url><loc>/dashboard</loc></url>
-  <url><loc>/trading</loc></url>
-  <url><loc>/expenses</loc></url>
-  <url><loc>/analytics</loc></url>
-  <url><loc>/brokers</loc></url>
-  <url><loc>/settings</loc></url>
-  <url><loc>/onboarding</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/auth</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/dashboard</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/trading</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/expenses</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/analytics</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/brokers</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/settings</loc></url>
+  <url><loc>https://tradetrackrr.vercel.app/onboarding</loc></url>
 </urlset>
-
