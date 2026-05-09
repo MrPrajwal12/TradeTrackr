@@ -1,0 +1,10 @@
+---
+description: Keep git commit messages clean (no extra Co-authored-by trailers)
+alwaysApply: true
+---
+
+# Git commit messages
+
+- Do not add extra `Co-authored-by:` trailers unless the user explicitly asks for co-authors.
+- If tooling appends authorship trailers you did not intend, fix the commit message before pushing.
+- Prefer a single author line matching the repository owner unless the user asks otherwise.
