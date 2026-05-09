@@ -21,7 +21,7 @@ It’s designed to feel **fast and smooth** while staying **secure by default** 
 - **State**: Zustand
 - **Forms/Validation**: react-hook-form + Zod
 - **Backend**: Supabase (Auth + Postgres + Row Level Security)
-- **AI**: Supabase Edge Function (`ai`) → OpenAI (server-side key)
+- **AI**: Supabase Edge Function (`ai`) → Groq (server-side key)
 
 ## Why it’s fast & smooth
 
@@ -72,17 +72,17 @@ Supabase Postgres is the source of truth.
 
 ## AI approach (secure, no API key in browser)
 
-AI runs through a **Supabase Edge Function** so the OpenAI key is never shipped to the client:
+AI runs through a **Supabase Edge Function** so the Groq key is never shipped to the client:
 
-- Function: `supabase/functions/ai/index.ts`
-- Client helper: `src/lib/ai.ts`
-- UI widget: `src/components/ai/AiAssistantWidget.tsx` (mounted globally in layout)
+- Function: [supabase/functions/ai/index.ts](supabase/functions/ai/index.ts)
+- Client helper: [src/lib/ai.ts](src/lib/ai.ts)
+- UI widget: [src/components/ai/AiAssistantWidget.tsx](src/components/ai/AiAssistantWidget.tsx) (mounted globally in layout)
 
 ### Security
 
 - Edge Function is deployed with **`verify_jwt: true`**
-- Set OpenAI key as a **Supabase secret**:
-  - `OPENAI_API_KEY`
+- Set Groq key as a **Supabase secret**:
+  - `GROQ_API_KEY`
 
 ### CORS
 
@@ -137,5 +137,5 @@ In Supabase:
 
 In Supabase **Edge Functions → Secrets**:
 
-- `OPENAI_API_KEY`
+- `GROQ_API_KEY`
 

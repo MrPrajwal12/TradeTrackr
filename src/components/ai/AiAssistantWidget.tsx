@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { askAi } from "@/lib/ai"
 import { cn } from "@/lib/utils"
+import { supabase } from "@/lib/supabase"
+import { useAuthStore } from "@/store/authStore"
 
 type Msg = { role: "user" | "assistant"; text: string }
 
@@ -12,6 +14,7 @@ export function AiAssistantWidget() {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [input, setInput] = useState("")
+  const { user, profile } = useAuthStore()
   const [messages, setMessages] = useState<Msg[]>([
     { role: "assistant", text: "Hi! Ask me anything about your trades, risk, or journaling." },
   ])
@@ -23,6 +26,73 @@ export function AiAssistantWidget() {
       .join("\n")
   }, [messages])
 
+  const buildMonthlyContext = async () => {
+    if (!user) return null
+    const ym = new Date().toISOString().slice(0, 7)
+    const start = `${ym}-01`
+    const end = `${ym}-31`
+
+    const [tradesRes, expensesRes] = await Promise.all([
+      supabase
+        .from("trade_entries")
+        .select("date, actual_pl, day_type")
+        .eq("user_id", user.id)
+        .gte("date", start)
+        .lte("date", end),
+      supabase
+        .from("expenses")
+        .select("date, type, category, amount")
+        .eq("user_id", user.id)
+        .eq("is_deleted", false)
+        .gte("date", start)
+        .lte("date", end),
+    ])
+
+    const trades = tradesRes.data ?? []
+    const expenses = expensesRes.data ?? []
+
+    const tradingDays = trades.filter((t) => t.day_type === "Trading Day" && t.actual_pl != null)
+    const totalPl = tradingDays.reduce((s, t) => s + (t.actual_pl ?? 0), 0)
+    const winDays = tradingDays.filter((t) => (t.actual_pl ?? 0) > 0).length
+    const winRate = tradingDays.length ? Math.round((winDays / tradingDays.length) * 100) : 0
+
+    const income = expenses.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0)
+    const expense = expenses.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0)
+    const net = income - expense
+
+    const byCategory = new Map<string, number>()
+    expenses
+      .filter((e) => e.type === "expense")
+      .forEach((e) => byCategory.set(e.category, (byCategory.get(e.category) ?? 0) + e.amount))
+    const topCategories = Array.from(byCategory.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([category, amount]) => ({ category, amount }))
+
+    return {
+      yearMonth: ym,
+      profile: profile
+        ? {
+            currency: profile.currency,
+            starting_capital: profile.starting_capital,
+            monthly_target: profile.monthly_target,
+            max_daily_loss: profile.max_daily_loss,
+          }
+        : null,
+      trading: {
+        tradingDays: tradingDays.length,
+        totalPl,
+        winRate,
+      },
+      expenses: {
+        income,
+        expense,
+        net,
+        topCategories,
+      },
+    }
+  }
+
   const send = async () => {
     const prompt = input.trim()
     if (!prompt || loading) return
@@ -30,14 +100,15 @@ export function AiAssistantWidget() {
     setMessages((m) => [...m, { role: "user", text: prompt }])
     setLoading(true)
     try {
-      const text = await askAi(`${context}\nUser: ${prompt}`)
+      const monthlyContext = await buildMonthlyContext()
+      const text = await askAi(`${context}\nUser: ${prompt}`, monthlyContext)
       setMessages((m) => [...m, { role: "assistant", text: text || "No answer returned." }])
     } catch {
       setMessages((m) => [
         ...m,
         {
           role: "assistant",
-          text: "AI isn’t configured yet. Make sure the Supabase Edge Function `ai` is deployed and the secret OPENAI_API_KEY is set in Supabase.",
+          text: "AI isn’t configured yet (or no session). Make sure you are signed in, the Supabase Edge Function `ai` is deployed, and the secret GROQ_API_KEY is set in Supabase.",
         },
       ])
     } finally {

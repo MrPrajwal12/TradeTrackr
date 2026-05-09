@@ -1,6 +1,6 @@
 // Supabase Edge Function: AI helper
 // Deploy with: supabase functions deploy ai
-// Set secret with: supabase secrets set OPENAI_API_KEY=...
+// Set secret with: supabase secrets set GROQ_API_KEY=...
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 
@@ -11,6 +11,7 @@ declare const Deno: {
 
 type AiRequest = {
   prompt: string
+  context?: unknown
 }
 
 const corsHeaders: Record<string, string> = {
@@ -28,9 +29,9 @@ Deno.serve(async (req) => {
     return new Response("Method Not Allowed", { status: 405, headers: corsHeaders })
   }
 
-  const openaiKey = Deno.env.get("OPENAI_API_KEY")
-  if (!openaiKey) {
-    return Response.json({ error: "OPENAI_API_KEY is not set" }, { status: 500, headers: corsHeaders })
+  const groqKey = Deno.env.get("GROQ_API_KEY")
+  if (!groqKey) {
+    return Response.json({ error: "GROQ_API_KEY is not set" }, { status: 500, headers: corsHeaders })
   }
 
   let body: AiRequest
@@ -40,7 +41,11 @@ Deno.serve(async (req) => {
     return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: corsHeaders })
   }
 
-  const prompt = (body?.prompt ?? "").trim()
+  const rawPrompt = (body?.prompt ?? "").trim()
+  const context = body?.context
+  const prompt = context
+    ? `Context (user data snapshot):\n${JSON.stringify(context)}\n\nUser request:\n${rawPrompt}`
+    : rawPrompt
   if (prompt.length < 3) {
     return Response.json({ error: "Prompt is too short" }, { status: 400, headers: corsHeaders })
   }
@@ -48,15 +53,15 @@ Deno.serve(async (req) => {
     return Response.json({ error: "Prompt is too long" }, { status: 400, headers: corsHeaders })
   }
 
-  const upstream = await fetch("https://api.openai.com/v1/responses", {
+  const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${openaiKey}`,
+      authorization: `Bearer ${groqKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-4.1-mini",
-      input: [
+      model: "llama-3.3-70b-versatile",
+      messages: [
         {
           role: "system",
           content:
@@ -64,6 +69,7 @@ Deno.serve(async (req) => {
         },
         { role: "user", content: prompt },
       ],
+      temperature: 0.2,
     }),
   })
 
@@ -76,9 +82,7 @@ Deno.serve(async (req) => {
   }
 
   const data = await upstream.json()
-  const outputText =
-    data?.output?.[0]?.content?.find((c: { type: string }) => c?.type === "output_text")?.text ??
-    ""
+  const outputText = data?.choices?.[0]?.message?.content ?? ""
 
   return Response.json({ text: outputText }, { headers: corsHeaders })
 })
