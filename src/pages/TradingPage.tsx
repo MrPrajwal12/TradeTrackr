@@ -24,7 +24,11 @@ import {
 import { cn } from '@/lib/utils'
 import type { TradeEntry } from '@/lib/supabase'
 
-type MergedDay = ReturnType<typeof generateMonthDays>[0] & Partial<TradeEntry> & {
+type MergedDay = ReturnType<typeof generateMonthDays>[0] & {
+  id?: string
+  notes: string
+  actual_pl: number | null
+  source?: TradeEntry['source']
   cumulative_pl: number
   running_capital: number
   daily_loss_allowed: number
