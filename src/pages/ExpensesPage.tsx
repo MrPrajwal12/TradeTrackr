@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { formatCurrency } from '@/lib/trading-utils'
+import { formatCurrency, localISODate, localYearMonth } from '@/lib/trading-utils'
 import { cn } from '@/lib/utils'
 import type { Expense } from '@/lib/supabase'
 
@@ -51,13 +51,13 @@ export function ExpensesPage() {
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all')
   const [filterCategory, setFilterCategory] = useState('all')
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [selectedMonth, setSelectedMonth] = useState(localYearMonth())
   const [, setUndoItem] = useState<Expense | null>(null)
 
   const { register, handleSubmit, control, watch, reset, setValue, formState: { errors } } = useForm<ExpenseForm>({
     resolver: zodResolver(expenseSchema),
     defaultValues: {
-      date: new Date().toISOString().slice(0, 10),
+      date: localISODate(),
       type: 'expense',
       category: 'Other',
       description: '',
@@ -100,7 +100,7 @@ export function ExpensesPage() {
       toast.success('Expense added!')
     }
 
-    reset({ date: new Date().toISOString().slice(0, 10), type: 'expense', category: 'Other', description: '' })
+    reset({ date: localISODate(), type: 'expense', category: 'Other', description: '' })
     setEditingExpense(null)
     setSheetOpen(false)
     loadExpenses()
@@ -181,7 +181,7 @@ export function ExpensesPage() {
           <h1 className="text-2xl font-bold tracking-tight">Expenses & Income</h1>
           <p className="text-sm text-muted-foreground">Track all your personal finance entries</p>
         </div>
-        <Button onClick={() => { setEditingExpense(null); reset({ date: new Date().toISOString().slice(0,10), type: 'expense', category: 'Other', description: '' }); setSheetOpen(true) }}>
+        <Button onClick={() => { setEditingExpense(null); reset({ date: localISODate(), type: 'expense', category: 'Other', description: '' }); setSheetOpen(true) }}>
           <Plus className="size-4 mr-2" /> Add Transaction
         </Button>
       </div>

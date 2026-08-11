@@ -11,7 +11,16 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { generateMonthDays, formatCurrency, getRowColor } from '@/lib/trading-utils'
+import {
+  generateMonthDays,
+  formatCurrency,
+  getRowColor,
+  computeCumulativePL,
+  localISODate,
+  localYearMonth,
+  shiftYearMonth,
+  parseLocalDate,
+} from '@/lib/trading-utils'
 import { cn } from '@/lib/utils'
 import type { TradeEntry } from '@/lib/supabase'
 
@@ -24,35 +33,32 @@ type MergedDay = ReturnType<typeof generateMonthDays>[0] & Partial<TradeEntry> &
 export function TradingPage() {
   const { month } = useParams()
   const { user, profile } = useAuthStore()
-  const [selectedMonth, setSelectedMonth] = useState(month || new Date().toISOString().slice(0, 7))
+  const [selectedMonth, setSelectedMonth] = useState(month || localYearMonth())
   const [entries, setEntries] = useState<MergedDay[]>([])
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editPL, setEditPL] = useState<string>('')
   const [editNotes, setEditNotes] = useState<string>('')
   const [breachAlert, setBreachAlert] = useState<string | null>(null)
 
-  const prevMonth = () => {
-    const d = new Date(`${selectedMonth}-01`)
-    d.setMonth(d.getMonth() - 1)
-    setSelectedMonth(d.toISOString().slice(0, 7))
-  }
+  const monthlyTarget = profile?.monthly_target || 20920
+  const startingCapital = profile?.starting_capital || 4184
+  const maxDailyLoss = profile?.max_daily_loss || 1255.2
+  const today = localISODate()
 
-  const nextMonth = () => {
-    const d = new Date(`${selectedMonth}-01`)
-    d.setMonth(d.getMonth() + 1)
-    setSelectedMonth(d.toISOString().slice(0, 7))
-  }
+  const prevMonth = () => setSelectedMonth((m) => shiftYearMonth(m, -1))
+  const nextMonth = () => setSelectedMonth((m) => shiftYearMonth(m, 1))
 
   const loadEntries = useCallback(async () => {
     if (!user || !profile) return
     setLoading(true)
 
-    const days = generateMonthDays(selectedMonth)
+    const days = generateMonthDays(selectedMonth, monthlyTarget)
     const startDate = `${selectedMonth}-01`
     const endDate = days[days.length - 1].date
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('trade_entries')
       .select('*')
       .eq('user_id', user.id)
@@ -60,42 +66,51 @@ export function TradingPage() {
       .lte('date', endDate)
       .order('date')
 
-    const dbMap = new Map((data || []).map(e => [e.date, e]))
+    if (error) {
+      toast.error(error.message)
+      setLoading(false)
+      return
+    }
 
-    // Merge and compute cumulative
-    let cumulative = 0
-    const merged = days.map(day => {
+    const dbMap = new Map((data || []).map((e) => [e.date, e]))
+
+    // Prefer freshly computed day fields (target/type) so Settings monthly_target is reflected.
+    const withPl = days.map((day) => {
       const db = dbMap.get(day.date)
-      const actualPL = db?.actual_pl ?? null
-      if (actualPL != null && day.day_type === 'Trading Day') {
-        cumulative += actualPL
-      }
       return {
         ...day,
-        ...(db || {}),
-        actual_pl: actualPL,
-        cumulative_pl: parseFloat(cumulative.toFixed(2)),
-        running_capital: parseFloat(((profile?.starting_capital || 4184) + cumulative).toFixed(2)),
-        daily_loss_allowed: profile?.max_daily_loss || 1255.2,
         id: db?.id,
         notes: db?.notes || '',
+        actual_pl: db?.actual_pl ?? null,
+        source: db?.source,
+        daily_loss_allowed: maxDailyLoss,
       }
     })
 
+    const merged = computeCumulativePL(withPl, startingCapital).map((row) => ({
+      ...row,
+      daily_loss_allowed: maxDailyLoss,
+    })) as MergedDay[]
+
     setEntries(merged)
 
-    // Check for breach
-    const breach = merged.find(e => e.actual_pl != null && e.actual_pl < -(profile?.max_daily_loss || 1255.2))
+    const breach = merged.find(
+      (e) => e.actual_pl != null && e.actual_pl < -maxDailyLoss
+    )
     if (breach) {
-      setBreachAlert(`Max daily loss breached on ${new Date(breach.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}!`)
+      setBreachAlert(
+        `Max daily loss breached on ${parseLocalDate(breach.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}!`
+      )
     } else {
       setBreachAlert(null)
     }
 
     setLoading(false)
-  }, [user, profile, selectedMonth])
+  }, [user, profile, selectedMonth, monthlyTarget, startingCapital, maxDailyLoss])
 
-  useEffect(() => { loadEntries() }, [loadEntries])
+  useEffect(() => {
+    loadEntries()
+  }, [loadEntries])
 
   const startEdit = (entry: MergedDay) => {
     setEditingId(entry.id ?? entry.date)
@@ -103,49 +118,96 @@ export function TradingPage() {
     setEditNotes(entry.notes || '')
   }
 
+  /** Persist P/L for one day, then rewrite cumulative/capital for the whole month. */
+  const persistMonthTotals = async (
+    monthEntries: Array<{
+      id?: string
+      date: string
+      weekday: string
+      day_type: string
+      daily_target_inr: number
+      actual_pl: number | null
+      notes?: string
+      cumulative_pl: number
+      running_capital: number
+    }>
+  ) => {
+    if (!user) return { error: new Error('Not signed in') as Error | null }
+
+    const rows = monthEntries.map((e) => ({
+      user_id: user.id,
+      date: e.date,
+      weekday: e.weekday,
+      day_type: e.day_type,
+      daily_target_inr: e.daily_target_inr,
+      actual_pl: e.actual_pl,
+      notes: e.notes || '',
+      cumulative_pl: e.cumulative_pl,
+      running_capital: e.running_capital,
+      daily_loss_allowed: maxDailyLoss,
+      source: 'manual' as const,
+      updated_at: new Date().toISOString(),
+    }))
+
+    // Only upsert days that have data or already existed — keep DB lean.
+    const toUpsert = rows.filter((r) => {
+      const existing = monthEntries.find((e) => e.date === r.date)
+      return Boolean(existing?.id) || r.actual_pl != null || (r.notes && r.notes.length > 0)
+    })
+
+    if (toUpsert.length === 0) return { error: null }
+
+    const { error } = await supabase
+      .from('trade_entries')
+      .upsert(toUpsert, { onConflict: 'user_id,date' })
+
+    return { error }
+  }
+
   const saveEdit = async (entry: MergedDay) => {
-    if (!user) return
-    const pl = editPL === '' ? null : parseFloat(editPL)
+    if (!user || !profile) return
 
-    if (pl != null && pl < -(profile?.max_daily_loss || 1255.2)) {
-      toast.error(`⚠️ Max daily loss breached! Loss of ${formatCurrency(Math.abs(pl))} exceeds limit of ${formatCurrency(profile?.max_daily_loss || 1255.2)}. Stop trading today!`, {
-        duration: 8000,
-      })
+    const trimmed = editPL.trim()
+    const pl = trimmed === '' ? null : Number(trimmed)
+    if (pl != null && !Number.isFinite(pl)) {
+      toast.error('Enter a valid P/L number')
+      return
     }
 
-    if (entry.id) {
-      const { error } = await supabase
-        .from('trade_entries')
-        .update({
-          actual_pl: pl,
-          notes: editNotes,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', entry.id)
-      if (error) {
-        toast.error(error.message)
-        return
-      }
-    } else {
-      const { error } = await supabase.from('trade_entries').insert({
-        user_id: user.id,
-        date: entry.date,
-        weekday: entry.weekday,
-        day_type: entry.day_type,
-        daily_target_inr: entry.daily_target_inr ?? 0,
-        actual_pl: pl,
-        notes: editNotes,
-        source: 'manual',
-      })
-      if (error) {
-        toast.error(error.message)
-        return
-      }
+    if (pl != null && pl < -maxDailyLoss) {
+      toast.error(
+        `Max daily loss breached! Loss of ${formatCurrency(Math.abs(pl))} exceeds limit of ${formatCurrency(maxDailyLoss)}. Stop trading today!`,
+        { duration: 8000 }
+      )
     }
 
-    toast.success('Entry saved! Running capital updated.')
+    setSaving(true)
+
+    // Optimistic local rebuild so UI updates immediately
+    const nextBase = entries.map((e) =>
+      e.date === entry.date
+        ? { ...e, actual_pl: pl, notes: editNotes }
+        : e
+    )
+    const nextMerged = computeCumulativePL(nextBase, startingCapital).map((row) => ({
+      ...row,
+      daily_loss_allowed: maxDailyLoss,
+    })) as MergedDay[]
+
+    setEntries(nextMerged)
+
+    const { error } = await persistMonthTotals(nextMerged)
+    setSaving(false)
+
+    if (error) {
+      toast.error(error.message)
+      await loadEntries()
+      return
+    }
+
+    toast.success('Entry saved — P/L, cumulative and capital updated.')
     setEditingId(null)
-    loadEntries()
+    await loadEntries()
   }
 
   // Monthly stats
@@ -153,8 +215,10 @@ export function TradingPage() {
   const monthlyEarned = tradingDays.reduce((s, e) => s + (e.actual_pl ?? 0), 0)
   const winDays = tradingDays.filter(e => (e.actual_pl ?? 0) > 0).length
   const winRate = tradingDays.length > 0 ? Math.round((winDays / tradingDays.length) * 100) : 0
-  const progress = Math.min(Math.round((monthlyEarned / (profile?.monthly_target || 20920)) * 100), 100)
-  const monthLabel = new Date(`${selectedMonth}-01`).toLocaleString('default', { month: 'long', year: 'numeric' })
+  const progress = Math.min(Math.round((monthlyEarned / monthlyTarget) * 100), 100)
+  const monthLabel = parseLocalDate(`${selectedMonth}-01`).toLocaleString('default', { month: 'long', year: 'numeric' })
+  const tradingDayCount = entries.filter((e) => e.day_type === 'Trading Day').length
+  const dailyTargetPreview = tradingDayCount > 0 ? monthlyTarget / tradingDayCount : 0
 
   return (
     <div className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -229,8 +293,11 @@ export function TradingPage() {
           <Progress value={progress} className="h-2.5" />
           <div className="flex justify-between text-xs text-muted-foreground mt-1.5">
             <span>{formatCurrency(monthlyEarned)} earned</span>
-            <span>{formatCurrency(profile?.monthly_target || 20920)} target</span>
+            <span>{formatCurrency(monthlyTarget)} target</span>
           </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            Daily target ≈ {formatCurrency(dailyTargetPreview)} ({tradingDayCount} trading days this month)
+          </p>
         </CardContent>
       </Card>
 
@@ -254,7 +321,7 @@ export function TradingPage() {
               <div className="md:hidden divide-y">
                 {entries.map((entry) => {
                   const isEditing = editingId === (entry.id ?? entry.date)
-                  const isToday = entry.date === new Date().toISOString().slice(0, 10)
+                  const isToday = entry.date === today
                   const plClass =
                     entry.actual_pl == null
                       ? "text-muted-foreground"
@@ -268,7 +335,7 @@ export function TradingPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className={cn("text-sm font-semibold", isToday && "text-primary")}>
-                              {new Date(entry.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
+                              {parseLocalDate(entry.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
                             </p>
                             {isToday ? (
                               <Badge variant="outline" className="text-[10px] h-4 px-1">
@@ -322,7 +389,7 @@ export function TradingPage() {
                               />
                             </div>
                             <div className="flex gap-2">
-                              <Button className="flex-1" onClick={() => saveEdit(entry)}>
+                              <Button className="flex-1" disabled={saving} onClick={() => saveEdit(entry)}>
                                 <Check className="size-4 mr-2" /> Save
                               </Button>
                               <Button variant="outline" className="flex-1" onClick={() => setEditingId(null)}>
@@ -367,7 +434,7 @@ export function TradingPage() {
                     {entries.map((entry) => {
                       const isEditing = editingId === (entry.id ?? entry.date)
                       const rowClass = getRowColor(entry.actual_pl ?? null, entry.daily_target_inr, entry.day_type)
-                      const isToday = entry.date === new Date().toISOString().slice(0, 10)
+                      const isToday = entry.date === today
 
                       return (
                         <tr
@@ -381,7 +448,7 @@ export function TradingPage() {
                         >
                           <td className="px-4 py-3 font-medium whitespace-nowrap">
                             <span className={cn(isToday && 'text-primary font-bold')}>
-                              {new Date(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                              {parseLocalDate(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                             </span>
                             {isToday && <Badge variant="outline" className="ml-1.5 text-[10px] h-4 px-1">Today</Badge>}
                           </td>
@@ -443,7 +510,11 @@ export function TradingPage() {
                             {entry.day_type === 'Trading Day' && (
                               isEditing ? (
                                 <div className="flex gap-1">
-                                  <button onClick={() => saveEdit(entry)} className="text-green-500 hover:text-green-600">
+                                  <button
+                                    disabled={saving}
+                                    onClick={() => saveEdit(entry)}
+                                    className="text-green-500 hover:text-green-600 disabled:opacity-50"
+                                  >
                                     <Check className="size-4" />
                                   </button>
                                   <button onClick={() => setEditingId(null)} className="text-muted-foreground hover:text-foreground">

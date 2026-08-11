@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { formatCurrency } from '@/lib/trading-utils'
+import { formatCurrency, computeCumulativePL, parseLocalDate } from '@/lib/trading-utils'
 
 const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
@@ -42,7 +42,7 @@ export function AnalyticsPage() {
     if (trades) {
       // Monthly aggregation
       const monthMap = new Map<string, { earned: number; profit: number; loss: number }>()
-      trades.forEach(t => {
+      trades.forEach((t) => {
         if (t.actual_pl == null || t.day_type !== 'Trading Day') return
         const ym = t.date.slice(0, 7)
         const cur = monthMap.get(ym) || { earned: 0, profit: 0, loss: 0 }
@@ -53,7 +53,10 @@ export function AnalyticsPage() {
       })
 
       const months = Array.from(monthMap.entries()).map(([ym, v]) => ({
-        month: new Date(`${ym}-01`).toLocaleString('default', { month: 'short', year: '2-digit' }),
+        month: parseLocalDate(`${ym}-01`).toLocaleString('default', {
+          month: 'short',
+          year: '2-digit',
+        }),
         earned: parseFloat(v.earned.toFixed(2)),
         target: profile.monthly_target,
         profit: parseFloat(v.profit.toFixed(2)),
@@ -61,14 +64,24 @@ export function AnalyticsPage() {
       }))
       setMonthlyData(months)
 
-      // Running capital
-      const capital = trades
-        .filter(t => t.running_capital != null)
-        .map(t => ({
-          date: new Date(t.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      // Recompute capital from actual P/L so stale DB cumulative doesn't hide journal edits
+      const recomputed = computeCumulativePL(
+        trades.map((t) => ({
+          date: t.date,
+          actual_pl: t.actual_pl,
+          day_type: t.day_type,
+        })),
+        profile.starting_capital
+      )
+      const capital = recomputed
+        .filter((_, i, arr) => i === 0 || arr[i].running_capital !== arr[i - 1].running_capital)
+        .map((t) => ({
+          date: parseLocalDate(t.date).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+          }),
           capital: t.running_capital,
         }))
-        .filter((_, i, arr) => i === 0 || arr[i].capital !== arr[i-1].capital)
       setRunningCapital(capital)
     }
 
@@ -90,7 +103,7 @@ export function AnalyticsPage() {
         ivMap.set(ym, cur)
       })
       const ivData = Array.from(ivMap.entries()).map(([ym, v]) => ({
-        month: new Date(`${ym}-01`).toLocaleString('default', { month: 'short', year: '2-digit' }),
+        month: parseLocalDate(`${ym}-01`).toLocaleString('default', { month: 'short', year: '2-digit' }),
         income: parseFloat(v.income.toFixed(2)),
         expense: parseFloat(v.expense.toFixed(2)),
       }))

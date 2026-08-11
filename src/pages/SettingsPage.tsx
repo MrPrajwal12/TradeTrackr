@@ -11,6 +11,7 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
+import { generateMonthDays } from '@/lib/trading-utils'
 
 export function SettingsPage() {
   const { user, profile, fetchProfile } = useAuthStore()
@@ -42,17 +43,84 @@ export function SettingsPage() {
     })
   }, [profile, reset])
 
-  const onSave = async (data: Record<string, unknown>) => {
+  const syncDailyTargets = async (
+    userId: string,
+    monthlyTarget: number,
+    maxDailyLoss: number
+  ) => {
+    const { data: rows } = await supabase
+      .from('trade_entries')
+      .select('id, date, day_type')
+      .eq('user_id', userId)
+
+    if (!rows?.length) return
+
+    const months = [...new Set(rows.map((r) => r.date.slice(0, 7)))]
+    const targetByDate = new Map<string, number>()
+    for (const ym of months) {
+      for (const day of generateMonthDays(ym, monthlyTarget)) {
+        targetByDate.set(day.date, day.daily_target_inr)
+      }
+    }
+
+    // Update in chunks to avoid huge payloads
+    const updates = rows
+      .map((r) => ({
+        id: r.id,
+        daily_target_inr: targetByDate.get(r.date) ?? 0,
+        daily_loss_allowed: maxDailyLoss,
+      }))
+      .filter((u) => u.id)
+
+    for (let i = 0; i < updates.length; i += 50) {
+      const chunk = updates.slice(i, i + 50)
+      await Promise.all(
+        chunk.map((u) =>
+          supabase
+            .from('trade_entries')
+            .update({
+              daily_target_inr: u.daily_target_inr,
+              daily_loss_allowed: u.daily_loss_allowed,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', u.id)
+        )
+      )
+    }
+  }
+
+  const onSave = async (data: {
+    full_name: string
+    starting_capital: number
+    monthly_target: number
+    max_daily_loss: number
+    currency: string
+  }) => {
     if (!user) return
     setSaving(true)
+
+    const targetChanged =
+      data.monthly_target !== profile?.monthly_target ||
+      data.max_daily_loss !== profile?.max_daily_loss
+
     const { error } = await supabase.from('profiles').update(data).eq('id', user.id)
-    setSaving(false)
     if (error) {
+      setSaving(false)
       toast.error('Failed to save settings')
-    } else {
-      await fetchProfile(user.id)
-      toast.success('Settings saved successfully!')
+      return
     }
+
+    if (targetChanged) {
+      await syncDailyTargets(user.id, data.monthly_target, data.max_daily_loss)
+    }
+
+    await fetchProfile(user.id)
+    setSaving(false)
+    toast.success(
+      targetChanged
+        ? 'Settings saved — daily targets recalculated for your journal.'
+        : 'Settings saved successfully!'
+    )
   }
 
   const handleExportCSV = () => {

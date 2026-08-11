@@ -9,7 +9,14 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { formatCurrency } from '@/lib/trading-utils'
+import {
+  formatCurrency,
+  generateMonthDays,
+  computeCumulativePL,
+  localYearMonth,
+  monthEndDate,
+  parseLocalDate,
+} from '@/lib/trading-utils'
 import { cn } from '@/lib/utils'
 
 type KPI = {
@@ -33,14 +40,15 @@ export function DashboardPage() {
   const [heatData, setHeatData] = useState<Array<{ date: string; pl: number | null; day_type: string }>>([])
   const [kpis, setKpis] = useState<KPI[]>([])
 
-  const currentMonth = new Date().toISOString().slice(0, 7)
+  const currentMonth = localYearMonth()
 
   const loadData = useCallback(async () => {
     if (!user || !profile) return
     setLoading(true)
 
     const startDate = `${currentMonth}-01`
-    const endDate = new Date(parseInt(currentMonth.slice(0,4)), parseInt(currentMonth.slice(5,7)), 0).toISOString().slice(0,10)
+    const endDate = monthEndDate(currentMonth)
+    const monthDays = generateMonthDays(currentMonth, profile.monthly_target)
 
     // Fetch trade entries
     const { data: trades } = await supabase
@@ -61,61 +69,79 @@ export function DashboardPage() {
       .lte('date', endDate)
       .eq('is_deleted', false)
 
-    if (trades) {
-      const tradingDays = trades.filter(t => t.day_type === 'Trading Day' && t.actual_pl != null)
-      const winDays = tradingDays.filter(t => (t.actual_pl ?? 0) > 0).length
-      const winRate = tradingDays.length > 0 ? Math.round((winDays / tradingDays.length) * 100) : 0
-      const latestEntry = trades.filter(t => t.actual_pl != null).at(-1)
-      const monthlyEarned = trades.reduce((sum, t) => sum + (t.actual_pl ?? 0), 0)
+    const dbMap = new Map((trades || []).map((t) => [t.date, t]))
+    const merged = computeCumulativePL(
+      monthDays.map((day) => {
+        const db = dbMap.get(day.date)
+        return {
+          ...day,
+          actual_pl: db?.actual_pl ?? null,
+          // Prefer live computed daily target from profile monthly_target
+          daily_target_inr: day.daily_target_inr,
+        }
+      }),
+      profile.starting_capital
+    )
 
-      setKpis([
-        {
-          title: 'Running Capital',
-          value: formatCurrency(latestEntry?.running_capital ?? profile.starting_capital),
-          delta: `+${(((latestEntry?.running_capital ?? profile.starting_capital) / profile.starting_capital - 1) * 100).toFixed(1)}% from start`,
-          icon: TrendingUp,
-          color: 'text-green-500',
-        },
-        {
-          title: 'This Month Earned',
-          value: formatCurrency(monthlyEarned),
-          delta: `${Math.round((monthlyEarned / profile.monthly_target) * 100)}% of target`,
-          icon: Target,
-          color: 'text-blue-500',
-        },
-        {
-          title: `Win Rate (${new Date().toLocaleString('default', { month: 'short' })})`,
-          value: `${winRate}%`,
-          delta: `${winDays} / ${tradingDays.length} days profitable`,
-          icon: Award,
-          color: 'text-yellow-500',
-        },
-        {
-          title: 'Max Daily Loss Guard',
-          value: formatCurrency(profile.max_daily_loss),
-          delta: `${trades.filter(t => (t.actual_pl ?? 0) < -profile.max_daily_loss).length} breaches this month`,
-          icon: Shield,
-          color: 'text-destructive',
-        },
-      ])
+    const tradingDays = merged.filter((t) => t.day_type === 'Trading Day' && t.actual_pl != null)
+    const winDays = tradingDays.filter((t) => (t.actual_pl ?? 0) > 0).length
+    const winRate = tradingDays.length > 0 ? Math.round((winDays / tradingDays.length) * 100) : 0
+    const monthlyEarned = tradingDays.reduce((sum, t) => sum + (t.actual_pl ?? 0), 0)
+    const latestWithPl = [...merged].reverse().find((t) => t.actual_pl != null)
+    const runningCapital = latestWithPl?.running_capital ?? profile.starting_capital
 
-      // PL chart data
-      const plChartData = trades
-        .filter(t => t.day_type === 'Trading Day')
-        .map((t, i) => ({
-          date: new Date(t.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
-          pl: t.cumulative_pl ?? 0,
-          target: parseFloat(((i + 1) * (profile.monthly_target / 22)).toFixed(2)),
-        }))
-      setPlData(plChartData)
+    setKpis([
+      {
+        title: 'Running Capital',
+        value: formatCurrency(runningCapital),
+        delta: `${runningCapital >= profile.starting_capital ? '+' : ''}${(((runningCapital / profile.starting_capital) - 1) * 100).toFixed(1)}% from start`,
+        icon: TrendingUp,
+        color: 'text-green-500',
+      },
+      {
+        title: 'This Month Earned',
+        value: formatCurrency(monthlyEarned),
+        delta: `${Math.round((monthlyEarned / profile.monthly_target) * 100)}% of target`,
+        icon: Target,
+        color: 'text-blue-500',
+      },
+      {
+        title: `Win Rate (${parseLocalDate(`${currentMonth}-01`).toLocaleString('default', { month: 'short' })})`,
+        value: `${winRate}%`,
+        delta: `${winDays} / ${tradingDays.length} days profitable`,
+        icon: Award,
+        color: 'text-yellow-500',
+      },
+      {
+        title: 'Max Daily Loss Guard',
+        value: formatCurrency(profile.max_daily_loss),
+        delta: `${merged.filter((t) => (t.actual_pl ?? 0) < -profile.max_daily_loss).length} breaches this month`,
+        icon: Shield,
+        color: 'text-destructive',
+      },
+    ])
 
-      // Heat data
-      setHeatData(trades.map(t => ({ date: t.date, pl: t.actual_pl, day_type: t.day_type })))
-    }
+    // Cumulative P/L vs cumulative daily targets (not hardcoded /22)
+    let cumulativeTarget = 0
+    const plChartData = merged
+      .filter((t) => t.day_type === 'Trading Day')
+      .map((t) => {
+        cumulativeTarget += t.daily_target_inr
+        return {
+          date: parseLocalDate(t.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+          pl: t.cumulative_pl,
+          target: parseFloat(cumulativeTarget.toFixed(2)),
+        }
+      })
+    setPlData(plChartData)
+
+    setHeatData(
+      merged.map((t) => ({ date: t.date, pl: t.actual_pl, day_type: t.day_type }))
+    )
 
     if (expenses) {
       const catMap = new Map<string, number>()
-      expenses.forEach(e => {
+      expenses.forEach((e) => {
         catMap.set(e.category, (catMap.get(e.category) ?? 0) + e.amount)
       })
       setExpenseData(Array.from(catMap.entries()).map(([name, value]) => ({ name, value })).slice(0, 5))
@@ -370,7 +396,7 @@ function HeatCalendar({ data }: { data: Array<{ date: string; pl: number | null;
   const weeks: Array<typeof data> = []
   if (data.length === 0) return <div className="text-center text-sm text-muted-foreground py-8">No data yet</div>
 
-  const firstDate = new Date(data[0].date)
+  const firstDate = parseLocalDate(data[0].date)
   const startPad = firstDate.getDay()
 
   const allDays: (typeof data[0] | null)[] = [

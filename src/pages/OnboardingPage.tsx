@@ -27,42 +27,47 @@ export function OnboardingPage() {
     currency: 'INR',
   })
 
-  const seedTradeData = async (userId: string, startingCapital: number) => {
+  const seedTradeData = async (
+    userId: string,
+    startingCapital: number,
+    monthlyTarget: number,
+    maxDailyLoss: number
+  ) => {
     const entries: Record<string, unknown>[] = []
 
     for (const yearMonth of MONTHS_TO_SEED) {
-      const days = generateMonthDays(yearMonth)
+      const days = generateMonthDays(yearMonth, monthlyTarget)
+      // Reset cumulative each month so totals don't bleed across months
+      let cumulative = 0
       for (const day of days) {
-        const seedEntry = APR_2026_SEED.find(s => s.date === day.date)
+        const seedEntry =
+          yearMonth === '2026-04'
+            ? APR_2026_SEED.find((s) => s.date === day.date)
+            : undefined
+        const actualPl = seedEntry?.actual_pl ?? null
+        if (actualPl != null && day.day_type === 'Trading Day') {
+          cumulative += actualPl
+        }
         entries.push({
           user_id: userId,
           date: day.date,
           weekday: day.weekday,
           day_type: day.day_type,
           daily_target_inr: day.daily_target_inr,
-          actual_pl: seedEntry?.actual_pl ?? null,
-          cumulative_pl: 0,
-          running_capital: startingCapital,
-          daily_loss_allowed: settings.max_daily_loss,
+          actual_pl: actualPl,
+          cumulative_pl: parseFloat(cumulative.toFixed(2)),
+          running_capital: parseFloat((startingCapital + cumulative).toFixed(2)),
+          daily_loss_allowed: maxDailyLoss,
           notes: '',
-          source: seedEntry ? 'manual' : 'manual',
+          source: 'manual',
         })
       }
     }
 
-    // Compute cumulative for Apr
-    let cumulative = 0
-    for (const entry of entries) {
-      if ((entry.actual_pl as number | null) != null && entry.day_type === 'Trading Day') {
-        cumulative += entry.actual_pl as number
-      }
-      entry.cumulative_pl = parseFloat(cumulative.toFixed(2))
-      entry.running_capital = parseFloat((startingCapital + cumulative).toFixed(2))
-    }
-
-    // Insert in batches of 100
     for (let i = 0; i < entries.length; i += 100) {
-      await supabase.from('trade_entries').upsert(entries.slice(i, i + 100), { onConflict: 'user_id,date' })
+      await supabase
+        .from('trade_entries')
+        .upsert(entries.slice(i, i + 100), { onConflict: 'user_id,date' })
     }
   }
 
@@ -81,8 +86,13 @@ export function OnboardingPage() {
         onboarding_completed: true,
       }).eq('id', user.id)
 
-      // Seed trade data
-      await seedTradeData(user.id, settings.starting_capital)
+      // Seed trade data using the monthly target from onboarding
+      await seedTradeData(
+        user.id,
+        settings.starting_capital,
+        settings.monthly_target,
+        settings.max_daily_loss
+      )
 
       // Seed default categories
       const defaultCategories = [
