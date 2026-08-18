@@ -253,18 +253,18 @@ export function enrichEntriesWithPace<
     if (entry.day_type === 'Trading Day') {
       cumulativeTarget += entry.daily_target_inr
     }
-    const isFuture =
+    const isUpcoming =
       entry.day_type === 'Trading Day' &&
-      entry.date > asOfDate &&
+      entry.date >= asOfDate &&
       entry.actual_pl == null
-    const effectiveTarget = isFuture ? adjustedDailyTarget : entry.daily_target_inr
+    const effectiveTarget = isUpcoming ? adjustedDailyTarget : entry.daily_target_inr
     const dailyGap =
       entry.actual_pl != null && entry.day_type === 'Trading Day'
         ? parseFloat((entry.actual_pl - entry.daily_target_inr).toFixed(2))
         : null
     const paceGap = parseFloat((entry.cumulative_pl - cumulativeTarget).toFixed(2))
     const neededToday =
-      isFuture && adjustedDailyTarget > 0 ? adjustedDailyTarget : null
+      isUpcoming && adjustedDailyTarget > 0 ? adjustedDailyTarget : null
 
     return {
       ...entry,

@@ -1,8 +1,17 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ChevronLeft, ChevronRight, TriangleAlert as AlertTriangle, TrendingUp, Target, Trophy, CreditCard as Edit2, Check, X, CalendarClock, ArrowUpRight, ArrowDownRight } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import {
+  ChevronLeft,
+  ChevronRight,
+  TriangleAlert as AlertTriangle,
+  Target,
+  CreditCard as Edit2,
+  Check,
+  X,
+  Sparkles,
+} from 'lucide-react'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -14,7 +23,6 @@ import { supabase } from '@/lib/supabase'
 import {
   generateMonthDays,
   formatCurrency,
-  getRowColor,
   computeCumulativePL,
   computeMonthTargetInsights,
   enrichEntriesWithPace,
@@ -48,6 +56,7 @@ export function TradingPage() {
   const [editPL, setEditPL] = useState<string>('')
   const [editNotes, setEditNotes] = useState<string>('')
   const [breachAlert, setBreachAlert] = useState<string | null>(null)
+  const [showOffDays, setShowOffDays] = useState(false)
 
   const monthlyTarget = profile?.monthly_target || 20920
   const startingCapital = profile?.starting_capital || 4184
@@ -81,7 +90,6 @@ export function TradingPage() {
 
     const dbMap = new Map((data || []).map((e) => [e.date, e]))
 
-    // Prefer freshly computed day fields (target/type) so Settings monthly_target is reflected.
     const withPl = days.map((day) => {
       const db = dbMap.get(day.date)
       return {
@@ -125,7 +133,6 @@ export function TradingPage() {
     setEditNotes(entry.notes || '')
   }
 
-  /** Persist P/L for one day, then rewrite cumulative/capital for the whole month. */
   const persistMonthTotals = async (
     monthEntries: Array<{
       id?: string
@@ -156,7 +163,6 @@ export function TradingPage() {
       updated_at: new Date().toISOString(),
     }))
 
-    // Only upsert days that have data or already existed — keep DB lean.
     const toUpsert = rows.filter((r) => {
       const existing = monthEntries.find((e) => e.date === r.date)
       return Boolean(existing?.id) || r.actual_pl != null || (r.notes && r.notes.length > 0)
@@ -190,7 +196,6 @@ export function TradingPage() {
 
     setSaving(true)
 
-    // Optimistic local rebuild so UI updates immediately
     const nextBase = entries.map((e) =>
       e.date === entry.date
         ? { ...e, actual_pl: pl, notes: editNotes }
@@ -212,12 +217,11 @@ export function TradingPage() {
       return
     }
 
-    toast.success('Entry saved — P/L, cumulative and capital updated.')
+    toast.success('Saved. Tomorrow’s target is updated.')
     setEditingId(null)
     await loadEntries()
   }
 
-  // Monthly stats
   const isCurrentMonth = selectedMonth === localYearMonth()
   const asOfDate = isCurrentMonth ? today : monthEndDate(selectedMonth)
 
@@ -227,506 +231,307 @@ export function TradingPage() {
     insights.adjustedDailyTarget,
     asOfDate
   )
+  const visibleEntries = displayEntries.filter(
+    (e) => showOffDays || e.day_type === 'Trading Day'
+  )
 
-  const tradingDays = entries.filter(e => e.day_type === 'Trading Day' && e.actual_pl != null)
+  const tradingDays = entries.filter((e) => e.day_type === 'Trading Day' && e.actual_pl != null)
   const monthlyEarned = insights.monthlyEarned
-  const winDays = tradingDays.filter(e => (e.actual_pl ?? 0) > 0).length
+  const winDays = tradingDays.filter((e) => (e.actual_pl ?? 0) > 0).length
   const winRate = tradingDays.length > 0 ? Math.round((winDays / tradingDays.length) * 100) : 0
   const progress = Math.min(Math.round((monthlyEarned / monthlyTarget) * 100), 100)
-  const monthLabel = parseLocalDate(`${selectedMonth}-01`).toLocaleString('default', { month: 'long', year: 'numeric' })
+  const monthLabel = parseLocalDate(`${selectedMonth}-01`).toLocaleString('default', {
+    month: 'long',
+    year: 'numeric',
+  })
   const tradingDayCount = entries.filter((e) => e.day_type === 'Trading Day').length
   const dailyTargetPreview = tradingDayCount > 0 ? monthlyTarget / tradingDayCount : 0
 
-  const formatGap = (gap: number) =>
-    gap >= 0 ? `+${formatCurrency(gap)}` : formatCurrency(gap)
+  const nextSessionLabel = insights.nextTradingDay
+    ? parseLocalDate(insights.nextTradingDay).toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'short',
+      })
+    : null
+
+  const todayEntry = displayEntries.find((e) => e.date === today)
+  const focusNeed =
+    todayEntry?.needed_pl ??
+    (insights.nextTradingDayNeeded > 0 ? insights.nextTradingDayNeeded : null)
 
   return (
-    <div className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
+    <div className="space-y-5 animate-in fade-in-0 slide-in-from-bottom-4 duration-500 max-w-5xl">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Trading Journal</h1>
-          <p className="text-sm text-muted-foreground">Monthly P&L tracking — mirrors your Excel plan exactly</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Trading Journal</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Log a day, then see what tomorrow needs to stay on target.
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={prevMonth}>
+        <div className="flex items-center gap-1 rounded-full border bg-card px-1 py-1">
+          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={prevMonth}>
             <ChevronLeft className="size-4" />
           </Button>
-          <span className="text-sm font-semibold min-w-[140px] text-center">{monthLabel}</span>
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={nextMonth}>
+          <span className="text-sm font-medium min-w-[132px] text-center px-2">{monthLabel}</span>
+          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={nextMonth}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
       </div>
 
-      {/* Breach Alert */}
       {breachAlert && (
-        <Alert variant="destructive" className="animate-in fade-in-0">
+        <Alert variant="destructive">
           <AlertTriangle className="size-4" />
           <AlertDescription className="font-medium">{breachAlert} Stop trading today.</AlertDescription>
         </Alert>
       )}
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-4 pb-4">
-            <p className="text-xs text-muted-foreground">Monthly Earned</p>
-            <p className={cn('text-xl font-bold mt-0.5', monthlyEarned >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>{formatCurrency(monthlyEarned)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4">
-            <p className="text-xs text-muted-foreground">Win Rate</p>
-            <p className="text-xl font-bold mt-0.5">{winRate}%</p>
-            <p className="text-xs text-muted-foreground">{winDays}/{tradingDays.length} days</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4">
-            <p className="text-xs text-muted-foreground">Best Day</p>
-            <p className="text-xl font-bold mt-0.5 text-green-600 dark:text-green-400">{formatCurrency(Math.max(0, ...tradingDays.map(e => e.actual_pl ?? 0)))}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4 pb-4">
-            <p className="text-xs text-muted-foreground">Worst Day</p>
-            <p className="text-xl font-bold mt-0.5 text-destructive">{formatCurrency(Math.min(0, ...tradingDays.map(e => e.actual_pl ?? 0)))}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Progress Bar */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Target className="size-4 text-primary" />
-              Monthly Target Progress
-            </CardTitle>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold">{progress}%</span>
-              {progress >= 100 && <Badge className="bg-green-500">Goal Achieved! 🎉</Badge>}
+      {isCurrentMonth && !loading && !insights.goalReached && focusNeed != null && (
+        <div className="rounded-2xl border bg-gradient-to-br from-primary/8 via-card to-card p-5 sm:p-6">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <Sparkles className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-muted-foreground">
+                {todayEntry?.needed_pl != null ? 'Aim for today' : `Aim for ${nextSessionLabel}`}
+              </p>
+              <p className="text-3xl font-semibold tracking-tight mt-1 text-primary">
+                {formatCurrency(focusNeed)}
+              </p>
+              <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                {insights.remainingToTarget > 0
+                  ? `${formatCurrency(insights.remainingToTarget)} left this month, spread over ${insights.remainingTradingDays} trading day${insights.remainingTradingDays === 1 ? '' : 's'}.`
+                  : 'Monthly target is covered.'}
+                {insights.yesterdayWasLoss && todayEntry?.needed_pl != null && (
+                  <> Yesterday was a loss of {formatCurrency(insights.yesterdayLoss)} — this number already includes the catch-up.</>
+                )}
+                {insights.todayGap != null && insights.todayGap < 0 && insights.nextTradingDay && (
+                  <> Today missed by {formatCurrency(Math.abs(insights.todayGap))}. Next session ({nextSessionLabel}) needs {formatCurrency(insights.nextTradingDayNeeded)}.</>
+                )}
+              </p>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <Progress value={progress} className="h-2.5" />
-          <div className="flex justify-between text-xs text-muted-foreground mt-1.5">
-            <span>{formatCurrency(monthlyEarned)} earned</span>
-            <span>{formatCurrency(monthlyTarget)} target</span>
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Base daily target ≈ {formatCurrency(dailyTargetPreview)} ({tradingDayCount} trading days)
-            {!insights.goalReached && insights.remainingTradingDays > 0 && isCurrentMonth && (
-              <> · <span className="text-foreground font-medium">Adjusted now: {formatCurrency(insights.adjustedDailyTarget)}/day</span></>
-            )}
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* Recovery / tomorrow plan */}
-      {isCurrentMonth && !loading && (
-        <Card className={cn(
-          'border-primary/20',
-          insights.paceGap < 0 && 'border-amber-500/40 bg-amber-50/30 dark:bg-amber-950/10'
-        )}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <CalendarClock className="size-4 text-primary" />
-              {insights.goalReached ? 'Monthly goal reached' : 'Recovery & next-day plan'}
-            </CardTitle>
-            <CardDescription>
-              {insights.goalReached
-                ? 'You hit your monthly target. Extra profit is bonus.'
-                : 'After wins or losses, this is what you need on remaining trading days to stay on track.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {insights.goalReached ? (
-              <p className="text-sm">
-                Earned {formatCurrency(insights.monthlyEarned)} vs {formatCurrency(insights.monthlyTarget)} target.
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Still needed (month)</p>
-                  <p className="text-lg font-bold">{formatCurrency(insights.remainingToTarget)}</p>
-                  <p className="text-xs text-muted-foreground">{insights.remainingTradingDays} trading days left</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Need per remaining day</p>
-                  <p className="text-lg font-bold text-primary">
-                    {insights.remainingTradingDays > 0
-                      ? formatCurrency(insights.adjustedDailyTarget)
-                      : '—'}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Base was {formatCurrency(dailyTargetPreview)}/day
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Next trading session</p>
-                  {insights.nextTradingDay ? (
-                    <>
-                      <p className="text-lg font-bold text-primary">
-                        {formatCurrency(insights.nextTradingDayNeeded)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {parseLocalDate(insights.nextTradingDay).toLocaleDateString('en-IN', {
-                          weekday: 'short',
-                          day: 'numeric',
-                          month: 'short',
-                        })}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No sessions left this month</p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Pace vs plan</p>
-                  <p className={cn(
-                    'text-lg font-bold flex items-center gap-1',
-                    insights.paceGap >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
-                  )}>
-                    {insights.paceGap >= 0 ? (
-                      <ArrowUpRight className="size-4" />
-                    ) : (
-                      <ArrowDownRight className="size-4" />
-                    )}
-                    {formatGap(insights.paceGap)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {insights.paceGap >= 0 ? 'Ahead of cumulative target' : 'Behind cumulative target'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {!insights.goalReached && (
-              <div className="mt-4 pt-4 border-t border-border/60 space-y-2 text-sm">
-                {insights.todayGap != null && insights.todayGap < 0 && (
-                  <p>
-                    <span className="font-medium">Today:</span> loss of {formatCurrency(Math.abs(insights.todayActual!))} —
-                    missed daily target by {formatCurrency(Math.abs(insights.todayGap))}.
-                    {insights.nextTradingDay && insights.remainingTradingDays > 0 && (
-                      <> Aim for <span className="font-semibold text-primary">{formatCurrency(insights.nextTradingDayNeeded)}</span> on your next session to spread the catch-up.</>
-                    )}
-                  </p>
-                )}
-                {insights.todayGap != null && insights.todayGap >= 0 && insights.todayActual != null && (
-                  <p>
-                    <span className="font-medium">Today:</span> {formatCurrency(insights.todayActual)} —
-                    {insights.todayGap === 0
-                      ? ' exactly on base daily target.'
-                      : ` ${formatGap(insights.todayGap)} vs base target (${formatCurrency(insights.todayBaseTarget)}).`}
-                  </p>
-                )}
-                {insights.yesterdayWasLoss && insights.todayGap == null && (
-                  <p>
-                    <span className="font-medium">Yesterday:</span> loss of {formatCurrency(insights.yesterdayLoss)}.
-                    {insights.nextTradingDay && (
-                      <> Next session target: <span className="font-semibold text-primary">{formatCurrency(insights.nextTradingDayNeeded)}</span>.</>
-                    )}
-                  </p>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        </div>
       )}
 
-      {/* Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <TrendingUp className="size-4" />
-            {monthLabel} — Daily Trading Log
-          </CardTitle>
-          <CardDescription>Click the edit icon on any trading day to enter P&L</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-6 space-y-3">
-              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
-            </div>
-          ) : (
-            <>
-              {/* Mobile cards */}
-              <div className="md:hidden divide-y">
-                {displayEntries.map((entry) => {
-                  const isEditing = editingId === (entry.id ?? entry.date)
-                  const isToday = entry.date === today
-                  const plClass =
-                    entry.actual_pl == null
-                      ? "text-muted-foreground"
-                      : entry.actual_pl >= 0
-                        ? "text-green-600 dark:text-green-400"
-                        : "text-destructive"
+      {isCurrentMonth && !loading && insights.goalReached && (
+        <div className="rounded-2xl border border-green-500/30 bg-green-500/8 p-5">
+          <p className="text-sm font-medium text-green-700 dark:text-green-400">Monthly goal reached</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {formatCurrency(insights.monthlyEarned)} earned vs {formatCurrency(insights.monthlyTarget)} target. Extra profit is bonus.
+          </p>
+        </div>
+      )}
 
-                  return (
-                    <div key={entry.date} className={cn("p-4", entry.day_type !== "Trading Day" && "opacity-70")}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className={cn("text-sm font-semibold", isToday && "text-primary")}>
-                              {parseLocalDate(entry.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
-                            </p>
-                            {isToday ? (
-                              <Badge variant="outline" className="text-[10px] h-4 px-1">
-                                Today
-                              </Badge>
-                            ) : null}
-                            <Badge
-                              variant={entry.day_type === "Trading Day" ? "outline" : "secondary"}
-                              className={cn("text-[10px] h-4 px-1", entry.day_type === "Trading Day" && "border-primary/30")}
-                            >
-                              {entry.day_type === "Trading Day" ? "Trading" : entry.day_type}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            {entry.weekday} • Base {entry.day_type === "Trading Day" ? formatCurrency(entry.daily_target_inr) : "—"}
-                            {entry.needed_pl != null && (
-                              <> · <span className="text-primary font-medium">Need {formatCurrency(entry.needed_pl)}</span></>
-                            )}
-                          </p>
-                          {entry.daily_gap != null && (
-                            <p className={cn(
-                              "text-xs mt-0.5",
-                              entry.daily_gap >= 0 ? "text-green-600 dark:text-green-400" : "text-destructive"
-                            )}>
-                              vs target: {formatGap(entry.daily_gap)}
-                              {entry.pace_gap !== 0 && (
-                                <> · Pace: {formatGap(entry.pace_gap)}</>
-                              )}
-                            </p>
-                          )}
-                        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="shadow-none">
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">This month</p>
+            <p className={cn('text-lg font-semibold mt-1 tabular-nums', monthlyEarned >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+              {formatCurrency(monthlyEarned)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="shadow-none">
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Still needed</p>
+            <p className="text-lg font-semibold mt-1 tabular-nums">{formatCurrency(insights.remainingToTarget)}</p>
+          </CardContent>
+        </Card>
+        <Card className="shadow-none">
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Win rate</p>
+            <p className="text-lg font-semibold mt-1">{winRate}%</p>
+            <p className="text-[11px] text-muted-foreground">{winDays}/{tradingDays.length} days</p>
+          </CardContent>
+        </Card>
+        <Card className="shadow-none">
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Days left</p>
+            <p className="text-lg font-semibold mt-1">{insights.remainingTradingDays}</p>
+            <p className="text-[11px] text-muted-foreground">of {tradingDayCount} trading days</p>
+          </CardContent>
+        </Card>
+      </div>
 
-                        <div className="shrink-0 text-right">
-                          <p className={cn("text-sm font-bold", plClass)}>
-                            {entry.day_type === "Trading Day"
-                              ? entry.actual_pl != null
-                                ? formatCurrency(entry.actual_pl)
-                                : "—"
-                              : "—"}
-                          </p>
-                          <p className="text-[11px] text-muted-foreground">
-                            Capital {formatCurrency(entry.running_capital)}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="mt-3">
-                        {isEditing ? (
-                          <div className="space-y-2">
-                            <div className="grid grid-cols-2 gap-2">
-                              <Input
-                                type="number"
-                                value={editPL}
-                                onChange={(e) => setEditPL(e.target.value)}
-                                className="h-9"
-                                placeholder="P/L"
-                                autoFocus
-                              />
-                              <Input
-                                value={editNotes}
-                                onChange={(e) => setEditNotes(e.target.value)}
-                                className="h-9"
-                                placeholder="Notes"
-                              />
-                            </div>
-                            <div className="flex gap-2">
-                              <Button className="flex-1" disabled={saving} onClick={() => saveEdit(entry)}>
-                                <Check className="size-4 mr-2" /> Save
-                              </Button>
-                              <Button variant="outline" className="flex-1" onClick={() => setEditingId(null)}>
-                                <X className="size-4 mr-2" /> Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-xs text-muted-foreground truncate flex-1">{entry.notes || "No notes"}</p>
-                            {entry.day_type === "Trading Day" ? (
-                              <Button variant="outline" size="sm" className="h-8" onClick={() => startEdit(entry)}>
-                                <Edit2 className="size-4 mr-2" /> Edit
-                              </Button>
-                            ) : null}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* Desktop table */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border bg-muted/50">
-                      <th className="text-left px-4 py-3 font-medium text-muted-foreground whitespace-nowrap w-[110px]">Date</th>
-                      <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[70px]">Day</th>
-                      <th className="text-left px-3 py-3 font-medium text-muted-foreground w-[110px]">Type</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Daily Target</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[110px]">Need</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[120px]">Actual P/L</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[100px]">vs Target</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Cumulative</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[110px]">Pace</th>
-                      <th className="text-right px-3 py-3 font-medium text-muted-foreground w-[130px]">Capital</th>
-                      <th className="text-left px-3 py-3 font-medium text-muted-foreground min-w-[150px]">Notes</th>
-                      <th className="px-3 py-3 w-[60px]"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayEntries.map((entry) => {
-                      const isEditing = editingId === (entry.id ?? entry.date)
-                      const rowClass = getRowColor(
-                        entry.actual_pl ?? null,
-                        entry.daily_target_inr,
-                        entry.day_type,
-                        entry.effective_target
-                      )
-                      const isToday = entry.date === today
-
-                      return (
-                        <tr
-                          key={entry.date}
-                          className={cn(
-                            'border-b border-border/50 transition-colors',
-                            rowClass,
-                            isToday && 'ring-1 ring-inset ring-primary/30',
-                            entry.day_type !== 'Trading Day' && 'opacity-60'
-                          )}
-                        >
-                          <td className="px-4 py-3 font-medium whitespace-nowrap">
-                            <span className={cn(isToday && 'text-primary font-bold')}>
-                              {parseLocalDate(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                            </span>
-                            {isToday && <Badge variant="outline" className="ml-1.5 text-[10px] h-4 px-1">Today</Badge>}
-                          </td>
-                          <td className="px-3 py-3 text-muted-foreground">{entry.weekday}</td>
-                          <td className="px-3 py-3">
-                            <Badge
-                              variant={entry.day_type === 'Trading Day' ? 'outline' : 'secondary'}
-                              className={cn('text-xs', entry.day_type === 'Trading Day' && 'border-primary/30')}
-                            >
-                              {entry.day_type === 'Trading Day' ? 'Trading' : entry.day_type}
-                            </Badge>
-                          </td>
-                          <td className="px-3 py-3 text-right text-muted-foreground">
-                            {entry.day_type === 'Trading Day' ? formatCurrency(entry.daily_target_inr) : '—'}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            {entry.needed_pl != null ? (
-                              <span className="font-medium text-primary">{formatCurrency(entry.needed_pl)}</span>
-                            ) : '—'}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            {isEditing ? (
-                              <Input
-                                type="number"
-                                value={editPL}
-                                onChange={e => setEditPL(e.target.value)}
-                                className="h-7 w-24 text-right text-xs ml-auto"
-                                autoFocus
-                              />
-                            ) : entry.day_type === 'Trading Day' ? (
-                              <span className={cn(
-                                'font-semibold',
-                                entry.actual_pl == null ? 'text-muted-foreground' :
-                                entry.actual_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
-                              )}>
-                                {entry.actual_pl != null ? formatCurrency(entry.actual_pl) : '—'}
-                              </span>
-                            ) : '—'}
-                          </td>
-                          <td className="px-3 py-3 text-right text-xs">
-                            {entry.daily_gap != null ? (
-                              <span className={cn(
-                                'font-medium',
-                                entry.daily_gap >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
-                              )}>
-                                {formatGap(entry.daily_gap)}
-                              </span>
-                            ) : '—'}
-                          </td>
-                          <td className="px-3 py-3 text-right font-medium">
-                            <span className={cn(entry.cumulative_pl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
-                              {formatCurrency(entry.cumulative_pl)}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 text-right text-xs">
-                            {entry.day_type === 'Trading Day' && entry.actual_pl != null ? (
-                              <span className={cn(
-                                'font-medium',
-                                entry.pace_gap >= 0 ? 'text-green-600 dark:text-green-400' : 'text-destructive'
-                              )}>
-                                {formatGap(entry.pace_gap)}
-                              </span>
-                            ) : entry.needed_pl != null ? (
-                              <span className="text-muted-foreground">—</span>
-                            ) : '—'}
-                          </td>
-                          <td className="px-3 py-3 text-right font-medium">
-                            {formatCurrency(entry.running_capital)}
-                          </td>
-                          <td className="px-3 py-3">
-                            {isEditing ? (
-                              <Input
-                                value={editNotes}
-                                onChange={e => setEditNotes(e.target.value)}
-                                className="h-7 text-xs"
-                                placeholder="Notes..."
-                              />
-                            ) : (
-                              <span className="text-xs text-muted-foreground truncate max-w-[180px] block">{entry.notes || ''}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3">
-                            {entry.day_type === 'Trading Day' && (
-                              isEditing ? (
-                                <div className="flex gap-1">
-                                  <button
-                                    disabled={saving}
-                                    onClick={() => saveEdit(entry)}
-                                    className="text-green-500 hover:text-green-600 disabled:opacity-50"
-                                  >
-                                    <Check className="size-4" />
-                                  </button>
-                                  <button onClick={() => setEditingId(null)} className="text-muted-foreground hover:text-foreground">
-                                    <X className="size-4" />
-                                  </button>
-                                </div>
-                              ) : (
-                                <button onClick={() => startEdit(entry)} className="text-muted-foreground hover:text-foreground transition-colors">
-                                  <Edit2 className="size-3.5" />
-                                </button>
-                              )
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+      <Card className="shadow-none">
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-sm font-medium flex items-center gap-2">
+              <Target className="size-4 text-primary" />
+              Monthly progress
+            </p>
+            <span className="text-sm font-semibold tabular-nums">{progress}%</span>
+          </div>
+          <Progress value={progress} className="h-2" />
+          <div className="flex justify-between text-xs text-muted-foreground mt-2">
+            <span>{formatCurrency(monthlyEarned)}</span>
+            <span>{formatCurrency(monthlyTarget)}</span>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Legend */}
-      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-        <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-green-500/40 border-l-2 border-green-500" /> Profit ≥ Target</div>
-        <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-yellow-400/40 border-l-2 border-yellow-400" /> Profit &lt; Target</div>
-        <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-red-400/40 border-l-2 border-red-400" /> Loss</div>
-        <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-muted" /> No Entry / Holiday</div>
-        <div className="flex items-center gap-1.5"><Target className="size-3 text-primary" /> Need = adjusted target for upcoming days</div>
-        <div className="flex items-center gap-1.5"><Trophy className="size-3 text-yellow-500" /> Pace = cumulative P/L vs planned target line</div>
-      </div>
+      <Card className="shadow-none overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 sm:px-5 py-4 border-b">
+          <div>
+            <p className="font-medium">{monthLabel} log</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Tap a trading day to add P/L</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full h-8"
+            onClick={() => setShowOffDays((v) => !v)}
+          >
+            {showOffDays ? 'Hide weekends' : 'Show weekends'}
+          </Button>
+        </div>
+
+        {loading ? (
+          <div className="p-5 space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-xl" />
+            ))}
+          </div>
+        ) : (
+          <div className="divide-y">
+            {visibleEntries.map((entry) => {
+              const isEditing = editingId === (entry.id ?? entry.date)
+              const isToday = entry.date === today
+              const isOff = entry.day_type !== 'Trading Day'
+              const pl = entry.actual_pl
+              const status =
+                isOff ? 'off'
+                : pl == null ? (entry.needed_pl != null ? 'need' : 'empty')
+                : pl < 0 ? 'loss'
+                : pl >= entry.daily_target_inr ? 'hit'
+                : 'short'
+
+              return (
+                <div
+                  key={entry.date}
+                  className={cn(
+                    'px-4 sm:px-5 py-3.5 transition-colors',
+                    isToday && 'bg-primary/5',
+                    isOff && 'opacity-55'
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={cn(
+                        'size-2.5 shrink-0 rounded-full',
+                        status === 'hit' && 'bg-emerald-500',
+                        status === 'short' && 'bg-amber-400',
+                        status === 'loss' && 'bg-red-400',
+                        status === 'need' && 'bg-primary',
+                        (status === 'empty' || status === 'off') && 'bg-muted-foreground/30'
+                      )}
+                    />
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className={cn('text-sm font-medium', isToday && 'text-primary')}>
+                          {parseLocalDate(entry.date).toLocaleDateString('en-IN', {
+                            weekday: 'short',
+                            day: 'numeric',
+                            month: 'short',
+                          })}
+                        </p>
+                        {isToday && (
+                          <Badge variant="outline" className="text-[10px] h-5 rounded-full px-2">
+                            Today
+                          </Badge>
+                        )}
+                        {isOff && (
+                          <Badge variant="secondary" className="text-[10px] h-5 rounded-full px-2">
+                            {entry.day_type}
+                          </Badge>
+                        )}
+                        {entry.needed_pl != null && (
+                          <Badge className="text-[10px] h-5 rounded-full px-2 bg-primary/15 text-primary hover:bg-primary/15">
+                            Need {formatCurrency(entry.needed_pl)}
+                          </Badge>
+                        )}
+                      </div>
+
+                      {!isEditing && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {isOff
+                            ? 'Market closed'
+                            : pl != null
+                              ? `${entry.daily_gap != null && entry.daily_gap >= 0 ? 'Ahead' : 'Behind'} ${formatCurrency(Math.abs(entry.daily_gap ?? 0))} · Capital ${formatCurrency(entry.running_capital)}`
+                              : `Base target ${formatCurrency(entry.daily_target_inr)}`}
+                        </p>
+                      )}
+                    </div>
+
+                    {!isEditing && (
+                      <div className="shrink-0 text-right">
+                        <p
+                          className={cn(
+                            'text-sm font-semibold tabular-nums',
+                            pl == null && 'text-muted-foreground',
+                            pl != null && pl >= 0 && 'text-emerald-600 dark:text-emerald-400',
+                            pl != null && pl < 0 && 'text-destructive'
+                          )}
+                        >
+                          {isOff || pl == null ? '—' : formatCurrency(pl)}
+                        </p>
+                      </div>
+                    )}
+
+                    {entry.day_type === 'Trading Day' && !isEditing && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 rounded-full"
+                        onClick={() => startEdit(entry)}
+                      >
+                        <Edit2 className="size-3.5" />
+                      </Button>
+                    )}
+                  </div>
+
+                  {isEditing && (
+                    <div className="mt-3 ml-5 space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <Input
+                          type="number"
+                          value={editPL}
+                          onChange={(e) => setEditPL(e.target.value)}
+                          className="h-10"
+                          placeholder="P/L for the day"
+                          autoFocus
+                        />
+                        <Input
+                          value={editNotes}
+                          onChange={(e) => setEditNotes(e.target.value)}
+                          className="h-10"
+                          placeholder="Optional note"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <Button className="rounded-full" disabled={saving} onClick={() => saveEdit(entry)}>
+                          <Check className="size-4 mr-1.5" /> Save
+                        </Button>
+                        <Button variant="ghost" className="rounded-full" onClick={() => setEditingId(null)}>
+                          <X className="size-4 mr-1.5" /> Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
+      <p className="text-xs text-muted-foreground px-1">
+        Base daily target is {formatCurrency(dailyTargetPreview)}. After a loss, remaining days share the leftover monthly goal — that’s the “Need” chip.
+      </p>
     </div>
   )
 }
