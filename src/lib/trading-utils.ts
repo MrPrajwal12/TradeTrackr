@@ -123,17 +123,158 @@ export function formatCurrency(amount: number, currency = 'INR'): string {
 export function getRowColor(
   actualPL: number | null,
   dailyTarget: number,
-  dayType: string
+  dayType: string,
+  /** When behind pace, use adjusted target for coloring upcoming days. */
+  effectiveTarget?: number
 ): string {
+  const target = effectiveTarget ?? dailyTarget
   if (dayType !== 'Trading Day') return 'bg-muted/30'
   if (actualPL == null) return ''
-  if (actualPL >= dailyTarget)
+  if (actualPL >= target)
     return 'bg-green-50 dark:bg-green-950/20 border-l-4 border-green-500'
   if (actualPL > 0)
     return 'bg-yellow-50 dark:bg-yellow-950/20 border-l-4 border-yellow-400'
   if (actualPL < 0)
     return 'bg-red-50 dark:bg-red-950/20 border-l-4 border-red-400'
   return ''
+}
+
+export type MonthTargetInsights = {
+  monthlyTarget: number
+  monthlyEarned: number
+  remainingToTarget: number
+  goalReached: boolean
+  totalTradingDays: number
+  completedTradingDays: number
+  /** Trading days strictly after asOfDate */
+  remainingTradingDays: number
+  /** Avg P/L needed on each remaining day to hit monthly goal */
+  adjustedDailyTarget: number
+  nextTradingDay: string | null
+  /** Same as adjustedDailyTarget — what the next session should aim for */
+  nextTradingDayNeeded: number
+  /** Cumulative P/L minus cumulative daily targets through asOfDate */
+  paceGap: number
+  /** Expected cumulative target through asOfDate */
+  expectedCumulativeByToday: number
+  todayGap: number | null
+  todayActual: number | null
+  todayBaseTarget: number
+  yesterdayWasLoss: boolean
+  yesterdayLoss: number
+}
+
+type TargetEntry = {
+  date: string
+  day_type: string
+  daily_target_inr: number
+  actual_pl: number | null
+  cumulative_pl?: number
+}
+
+/**
+ * How much the trader still needs per remaining day after wins/losses.
+ * Uses: (monthlyTarget - earnedSoFar) / remainingTradingDays.
+ */
+export function computeMonthTargetInsights(
+  entries: TargetEntry[],
+  monthlyTarget: number,
+  asOfDate: string = localISODate()
+): MonthTargetInsights {
+  const tradingDays = entries.filter((e) => e.day_type === 'Trading Day')
+  const completed = tradingDays.filter((e) => e.actual_pl != null)
+  const monthlyEarned = completed.reduce((s, e) => s + (e.actual_pl ?? 0), 0)
+  const remainingToTarget = Math.max(0, monthlyTarget - monthlyEarned)
+  const goalReached = monthlyEarned >= monthlyTarget
+
+  const remainingTradingDays = tradingDays.filter((e) => e.date > asOfDate).length
+  const adjustedDailyTarget =
+    remainingTradingDays > 0
+      ? parseFloat((remainingToTarget / remainingTradingDays).toFixed(2))
+      : 0
+
+  const next = tradingDays.find((e) => e.date > asOfDate) ?? null
+
+  let expectedCumulative = 0
+  let actualCumulative = 0
+  let paceGap = 0
+  for (const e of entries) {
+    if (e.day_type !== 'Trading Day') continue
+    expectedCumulative += e.daily_target_inr
+    if (e.actual_pl != null) actualCumulative += e.actual_pl
+    if (e.date <= asOfDate) {
+      paceGap = parseFloat((actualCumulative - expectedCumulative).toFixed(2))
+    }
+  }
+
+  const todayRow = entries.find((e) => e.date === asOfDate)
+  const todayActual =
+    todayRow?.day_type === 'Trading Day' ? todayRow.actual_pl : null
+  const todayBaseTarget =
+    todayRow?.day_type === 'Trading Day' ? todayRow.daily_target_inr : 0
+  const todayGap =
+    todayActual != null && todayRow?.day_type === 'Trading Day'
+      ? parseFloat((todayActual - todayRow.daily_target_inr).toFixed(2))
+      : null
+
+  const yesterday = entries
+    .filter((e) => e.date < asOfDate && e.day_type === 'Trading Day')
+    .reverse()[0]
+  const yesterdayWasLoss = (yesterday?.actual_pl ?? 0) < 0
+  const yesterdayLoss = yesterdayWasLoss ? Math.abs(yesterday!.actual_pl!) : 0
+
+  return {
+    monthlyTarget,
+    monthlyEarned: parseFloat(monthlyEarned.toFixed(2)),
+    remainingToTarget: parseFloat(remainingToTarget.toFixed(2)),
+    goalReached,
+    totalTradingDays: tradingDays.length,
+    completedTradingDays: completed.length,
+    remainingTradingDays,
+    adjustedDailyTarget,
+    nextTradingDay: next?.date ?? null,
+    nextTradingDayNeeded: adjustedDailyTarget,
+    paceGap,
+    expectedCumulativeByToday: parseFloat(expectedCumulative.toFixed(2)),
+    todayGap,
+    todayActual,
+    todayBaseTarget,
+    yesterdayWasLoss,
+    yesterdayLoss,
+  }
+}
+
+/** Per-row cumulative target line + daily gap vs base target. */
+export function enrichEntriesWithPace<
+  T extends TargetEntry & { cumulative_pl: number },
+>(entries: T[], adjustedDailyTarget: number, asOfDate: string = localISODate()) {
+  let cumulativeTarget = 0
+  return entries.map((entry) => {
+    if (entry.day_type === 'Trading Day') {
+      cumulativeTarget += entry.daily_target_inr
+    }
+    const isFuture =
+      entry.day_type === 'Trading Day' &&
+      entry.date > asOfDate &&
+      entry.actual_pl == null
+    const effectiveTarget = isFuture ? adjustedDailyTarget : entry.daily_target_inr
+    const dailyGap =
+      entry.actual_pl != null && entry.day_type === 'Trading Day'
+        ? parseFloat((entry.actual_pl - entry.daily_target_inr).toFixed(2))
+        : null
+    const paceGap = parseFloat((entry.cumulative_pl - cumulativeTarget).toFixed(2))
+    const neededToday =
+      isFuture && adjustedDailyTarget > 0 ? adjustedDailyTarget : null
+
+    return {
+      ...entry,
+      cumulative_target: parseFloat(cumulativeTarget.toFixed(2)),
+      effective_target: effectiveTarget,
+      daily_gap: dailyGap,
+      pace_gap: paceGap,
+      needed_pl: neededToday,
+    }
+  })
 }
 
 // Seed data for Apr 2026
