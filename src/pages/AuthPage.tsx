@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod/v4'
 import { toast } from 'sonner'
 import { Zap, Eye, EyeOff, ArrowLeft } from 'lucide-react'
+import type { Session, User } from '@supabase/supabase-js'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/store/authStore'
 
 const authSchema = z.object({
   email: z.string().email('Invalid email'),
@@ -29,6 +31,14 @@ type OtpRequestForm = z.infer<typeof otpRequestSchema>
 
 export function AuthPage() {
   const navigate = useNavigate()
+  const {
+    user,
+    profile,
+    loading: authLoading,
+    setUser,
+    setSession,
+    fetchProfile,
+  } = useAuthStore()
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [signInMethod, setSignInMethod] = useState<'otp' | 'password'>('otp')
@@ -55,15 +65,51 @@ export function AuthPage() {
 
   const redirectTo = useMemo(() => `${window.location.origin}/dashboard`, [])
 
+  /** Push session into the store before navigating so ProtectedRoute does not bounce to /auth. */
+  const enterApp = async (session: Session, nextUser: User) => {
+    setSession(session)
+    setUser(nextUser)
+    await fetchProfile(nextUser.id)
+    const nextProfile = useAuthStore.getState().profile
+    navigate(nextProfile?.onboarding_completed ? '/dashboard' : '/onboarding', { replace: true })
+  }
+
+  // Already signed in — leave /auth
+  if (!authLoading && user) {
+    if (!profile) {
+      return (
+        <div className="flex min-h-svh items-center justify-center bg-background">
+          <div className="flex flex-col items-center gap-4">
+            <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent" />
+            <p className="text-sm text-muted-foreground">Opening your account…</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <Navigate
+        to={profile.onboarding_completed ? '/dashboard' : '/onboarding'}
+        replace
+      />
+    )
+  }
+
   const handleSignIn = async (data: AuthForm) => {
     setLoading(true)
-    const { error } = await supabase.auth.signInWithPassword(data)
-    setLoading(false)
+    const { data: authData, error } = await supabase.auth.signInWithPassword(data)
     if (error) {
+      setLoading(false)
       toast.error(error.message)
-    } else {
-      navigate('/dashboard')
+      return
     }
+    if (authData.session && authData.user) {
+      try {
+        await enterApp(authData.session, authData.user)
+      } catch {
+        toast.error('Signed in, but failed to load your profile. Try again.')
+      }
+    }
+    setLoading(false)
   }
 
   const handleGoogleSignIn = async () => {
@@ -109,27 +155,35 @@ export function AuthPage() {
       return
     }
     setLoading(true)
-    const { error } = await supabase.auth.verifyOtp({
+    const { data: authData, error } = await supabase.auth.verifyOtp({
       email: otpEmail,
       token: otpCode.replace(/\s/g, ''),
       type: 'email',
     })
-    setLoading(false)
     if (error) {
+      setLoading(false)
       toast.error(error.message)
       return
     }
-    navigate('/dashboard')
+    if (authData.session && authData.user) {
+      try {
+        await enterApp(authData.session, authData.user)
+      } catch {
+        toast.error('Signed in, but failed to load your profile. Try again.')
+      }
+    }
+    setLoading(false)
   }
 
   const handleSignUp = async (data: AuthForm) => {
     setLoading(true)
     const { data: authData, error } = await supabase.auth.signUp(data)
-    setLoading(false)
     if (error) {
+      setLoading(false)
       toast.error(error.message)
-    } else if (authData.user) {
-      // Create profile safely (handles races with auto-create)
+      return
+    }
+    if (authData.user) {
       await supabase.from('profiles').upsert({
         id: authData.user.id,
         full_name: '',
@@ -139,9 +193,30 @@ export function AuthPage() {
         max_daily_loss: 1255.2,
         onboarding_completed: false,
       }, { onConflict: 'id' })
-      toast.success('Account created! Let\'s set up your profile.')
-      navigate('/onboarding')
+
+      if (authData.session) {
+        try {
+          await enterApp(authData.session, authData.user)
+          toast.success("Account created! Let's set up your profile.")
+        } catch {
+          toast.error('Account created, but failed to open onboarding. Sign in again.')
+        }
+      } else {
+        toast.success('Check your email to confirm your account, then sign in.')
+      }
     }
+    setLoading(false)
+  }
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent" />
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        </div>
+      </div>
+    )
   }
 
   return (
