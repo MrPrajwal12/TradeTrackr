@@ -10,6 +10,9 @@ import {
   Check,
   X,
   Sparkles,
+  Wallet,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -26,11 +29,14 @@ import {
   computeCumulativePL,
   computeMonthTargetInsights,
   enrichEntriesWithPace,
+  buildCapitalTrail,
+  sumTradingPL,
   localISODate,
   localYearMonth,
   shiftYearMonth,
   parseLocalDate,
   monthEndDate,
+  type CapitalTrail,
 } from '@/lib/trading-utils'
 import { cn } from '@/lib/utils'
 import type { TradeEntry } from '@/lib/supabase'
@@ -49,7 +55,14 @@ export function TradingPage() {
   const { month } = useParams()
   const { user, profile } = useAuthStore()
   const [selectedMonth, setSelectedMonth] = useState(month || localYearMonth())
+  const monthlyTarget = profile?.monthly_target || 20920
+  const startingCapital = profile?.starting_capital || 4184
+  const maxDailyLoss = profile?.max_daily_loss || 1255.2
+  const today = localISODate()
+
   const [entries, setEntries] = useState<MergedDay[]>([])
+  const [monthOpeningCapital, setMonthOpeningCapital] = useState(4184)
+  const [capitalTrail, setCapitalTrail] = useState<CapitalTrail | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -57,11 +70,6 @@ export function TradingPage() {
   const [editNotes, setEditNotes] = useState<string>('')
   const [breachAlert, setBreachAlert] = useState<string | null>(null)
   const [showOffDays, setShowOffDays] = useState(false)
-
-  const monthlyTarget = profile?.monthly_target || 20920
-  const startingCapital = profile?.starting_capital || 4184
-  const maxDailyLoss = profile?.max_daily_loss || 1255.2
-  const today = localISODate()
 
   const prevMonth = () => setSelectedMonth((m) => shiftYearMonth(m, -1))
   const nextMonth = () => setSelectedMonth((m) => shiftYearMonth(m, 1))
@@ -73,6 +81,23 @@ export function TradingPage() {
     const days = generateMonthDays(selectedMonth, monthlyTarget)
     const startDate = `${selectedMonth}-01`
     const endDate = days[days.length - 1].date
+
+    // Prior months' P/L rolls into this month's opening capital
+    const { data: priorRows, error: priorError } = await supabase
+      .from('trade_entries')
+      .select('actual_pl, day_type')
+      .eq('user_id', user.id)
+      .lt('date', startDate)
+
+    if (priorError) {
+      toast.error(priorError.message)
+      setLoading(false)
+      return
+    }
+
+    const priorPL = sumTradingPL(priorRows || [])
+    const opening = parseFloat((startingCapital + priorPL).toFixed(2))
+    setMonthOpeningCapital(opening)
 
     const { data, error } = await supabase
       .from('trade_entries')
@@ -102,11 +127,13 @@ export function TradingPage() {
       }
     })
 
-    const merged = computeCumulativePL(withPl, startingCapital).map((row) => ({
+    const merged = computeCumulativePL(withPl, opening).map((row) => ({
       ...row,
       daily_loss_allowed: maxDailyLoss,
     })) as MergedDay[]
 
+    const monthPL = sumTradingPL(merged)
+    setCapitalTrail(buildCapitalTrail(startingCapital, priorPL, monthPL, monthlyTarget))
     setEntries(merged)
 
     const breach = merged.find(
@@ -201,12 +228,15 @@ export function TradingPage() {
         ? { ...e, actual_pl: pl, notes: editNotes }
         : e
     )
-    const nextMerged = computeCumulativePL(nextBase, startingCapital).map((row) => ({
+    const nextMerged = computeCumulativePL(nextBase, monthOpeningCapital).map((row) => ({
       ...row,
       daily_loss_allowed: maxDailyLoss,
     })) as MergedDay[]
 
     setEntries(nextMerged)
+    const monthPL = sumTradingPL(nextMerged)
+    const priorPL = parseFloat((monthOpeningCapital - startingCapital).toFixed(2))
+    setCapitalTrail(buildCapitalTrail(startingCapital, priorPL, monthPL, monthlyTarget))
 
     const { error } = await persistMonthTotals(nextMerged)
     setSaving(false)
@@ -245,7 +275,6 @@ export function TradingPage() {
     year: 'numeric',
   })
   const tradingDayCount = entries.filter((e) => e.day_type === 'Trading Day').length
-  const dailyTargetPreview = tradingDayCount > 0 ? monthlyTarget / tradingDayCount : 0
 
   const nextSessionLabel = insights.nextTradingDay
     ? parseLocalDate(insights.nextTradingDay).toLocaleDateString('en-IN', {
@@ -325,6 +354,84 @@ export function TradingPage() {
         </div>
       )}
 
+      {capitalTrail && !loading && (
+        <Card className="shadow-none border-primary/15">
+          <CardContent className="p-4 sm:p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                <Wallet className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">Capital carry-forward</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                  Losses reduce capital into the next month. Profits (including surplus above your monthly target) add to capital and continue forward.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-muted/40 p-3">
+                <p className="text-[11px] text-muted-foreground">Opened {monthLabel}</p>
+                <p className="text-base font-semibold tabular-nums mt-1">{formatCurrency(capitalTrail.monthOpeningCapital)}</p>
+                {capitalTrail.priorPL !== 0 && (
+                  <p className={cn('text-[11px] mt-0.5', capitalTrail.priorPL >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+                    Prior months {capitalTrail.priorPL >= 0 ? '+' : ''}{formatCurrency(capitalTrail.priorPL)}
+                  </p>
+                )}
+              </div>
+              <div className="rounded-xl bg-muted/40 p-3">
+                <p className="text-[11px] text-muted-foreground">This month P/L</p>
+                <p className={cn('text-base font-semibold tabular-nums mt-1', capitalTrail.monthPL >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+                  {capitalTrail.monthPL >= 0 ? '+' : ''}{formatCurrency(capitalTrail.monthPL)}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Target {formatCurrency(monthlyTarget)}
+                </p>
+              </div>
+              <div className="rounded-xl bg-muted/40 p-3">
+                <p className="text-[11px] text-muted-foreground">Capital now</p>
+                <p className="text-base font-semibold tabular-nums mt-1">{formatCurrency(capitalTrail.monthClosingCapital)}</p>
+                {capitalTrail.surplusOverTarget > 0 && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">
+                    +{formatCurrency(capitalTrail.surplusOverTarget)} above target rolls next
+                  </p>
+                )}
+              </div>
+              <div className="rounded-xl bg-muted/40 p-3">
+                <p className="text-[11px] text-muted-foreground">Since you started</p>
+                <p className={cn(
+                  'text-base font-semibold tabular-nums mt-1 flex items-center gap-1',
+                  capitalTrail.vsStart >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'
+                )}>
+                  {capitalTrail.vsStart >= 0 ? <ArrowUpRight className="size-4" /> : <ArrowDownRight className="size-4" />}
+                  {capitalTrail.vsStart >= 0 ? '+' : ''}{formatCurrency(capitalTrail.vsStart)}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  From {formatCurrency(capitalTrail.baseCapital)}
+                </p>
+              </div>
+            </div>
+
+            <p className={cn(
+              'text-sm rounded-xl px-3 py-2',
+              capitalTrail.vsStart >= 0
+                ? 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                : 'bg-destructive/10 text-destructive'
+            )}>
+              {capitalTrail.vsStart >= 0
+                ? `Overall you are ahead by ${formatCurrency(capitalTrail.vsStart)}. Keep compounding into next month.`
+                : `Overall you are down ${formatCurrency(Math.abs(capitalTrail.vsStart))} from start. Next month opens lower — focus on recovering that gap.`}
+              {capitalTrail.vsMonthlyTarget < 0 && (
+                <> This month is {formatCurrency(Math.abs(capitalTrail.vsMonthlyTarget))} behind target.</>
+              )}
+              {capitalTrail.vsMonthlyTarget > 0 && (
+                <> This month is {formatCurrency(capitalTrail.vsMonthlyTarget)} above target — surplus stays in capital.</>
+              )}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card className="shadow-none">
           <CardContent className="p-4">
@@ -336,8 +443,10 @@ export function TradingPage() {
         </Card>
         <Card className="shadow-none">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Still needed</p>
-            <p className="text-lg font-semibold mt-1 tabular-nums">{formatCurrency(insights.remainingToTarget)}</p>
+            <p className="text-xs text-muted-foreground">Capital now</p>
+            <p className="text-lg font-semibold mt-1 tabular-nums">
+              {formatCurrency(capitalTrail?.monthClosingCapital ?? monthOpeningCapital)}
+            </p>
           </CardContent>
         </Card>
         <Card className="shadow-none">
@@ -530,7 +639,7 @@ export function TradingPage() {
       </Card>
 
       <p className="text-xs text-muted-foreground px-1">
-        Base daily target is {formatCurrency(dailyTargetPreview)}. After a loss, remaining days share the leftover monthly goal — that’s the “Need” chip.
+        Opening capital for each month = your start capital + every prior month’s P/L. Losses shrink next month’s opening balance; surplus above target grows it.
       </p>
     </div>
   )

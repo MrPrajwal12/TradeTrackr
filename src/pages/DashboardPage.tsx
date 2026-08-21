@@ -13,6 +13,7 @@ import {
   formatCurrency,
   generateMonthDays,
   computeCumulativePL,
+  sumTradingPL,
   localYearMonth,
   monthEndDate,
   parseLocalDate,
@@ -50,6 +51,15 @@ export function DashboardPage() {
     const endDate = monthEndDate(currentMonth)
     const monthDays = generateMonthDays(currentMonth, profile.monthly_target)
 
+    const { data: priorRows } = await supabase
+      .from('trade_entries')
+      .select('actual_pl, day_type')
+      .eq('user_id', user.id)
+      .lt('date', startDate)
+
+    const priorPL = sumTradingPL(priorRows || [])
+    const monthOpeningCapital = parseFloat((profile.starting_capital + priorPL).toFixed(2))
+
     // Fetch trade entries
     const { data: trades } = await supabase
       .from('trade_entries')
@@ -76,11 +86,10 @@ export function DashboardPage() {
         return {
           ...day,
           actual_pl: db?.actual_pl ?? null,
-          // Prefer live computed daily target from profile monthly_target
           daily_target_inr: day.daily_target_inr,
         }
       }),
-      profile.starting_capital
+      monthOpeningCapital
     )
 
     const tradingDays = merged.filter((t) => t.day_type === 'Trading Day' && t.actual_pl != null)
@@ -88,15 +97,16 @@ export function DashboardPage() {
     const winRate = tradingDays.length > 0 ? Math.round((winDays / tradingDays.length) * 100) : 0
     const monthlyEarned = tradingDays.reduce((sum, t) => sum + (t.actual_pl ?? 0), 0)
     const latestWithPl = [...merged].reverse().find((t) => t.actual_pl != null)
-    const runningCapital = latestWithPl?.running_capital ?? profile.starting_capital
+    const runningCapital = latestWithPl?.running_capital ?? monthOpeningCapital
+    const vsStart = parseFloat((runningCapital - profile.starting_capital).toFixed(2))
 
     setKpis([
       {
         title: 'Running Capital',
         value: formatCurrency(runningCapital),
-        delta: `${runningCapital >= profile.starting_capital ? '+' : ''}${(((runningCapital / profile.starting_capital) - 1) * 100).toFixed(1)}% from start`,
+        delta: `${vsStart >= 0 ? '+' : ''}${formatCurrency(vsStart)} since start · opened month at ${formatCurrency(monthOpeningCapital)}`,
         icon: TrendingUp,
-        color: 'text-green-500',
+        color: vsStart >= 0 ? 'text-green-500' : 'text-destructive',
       },
       {
         title: 'This Month Earned',

@@ -111,6 +111,68 @@ export function computeCumulativePL<
   })
 }
 
+/** Sum trading-day P/L (ignores weekends/holidays and empty days). */
+export function sumTradingPL(
+  rows: Array<{ actual_pl: number | null; day_type?: string }>
+): number {
+  return parseFloat(
+    rows
+      .filter((r) => r.actual_pl != null && (r.day_type == null || r.day_type === 'Trading Day'))
+      .reduce((s, r) => s + (r.actual_pl ?? 0), 0)
+      .toFixed(2)
+  )
+}
+
+export type CapitalTrail = {
+  /** Profile starting capital (never changes unless user edits Settings) */
+  baseCapital: number
+  /** Total P/L from all months before this one */
+  priorPL: number
+  /** Capital at the start of this month = base + priorPL */
+  monthOpeningCapital: number
+  /** This month's trading P/L */
+  monthPL: number
+  /** Capital after this month so far = opening + monthPL */
+  monthClosingCapital: number
+  /** Lifetime P/L = prior + this month */
+  lifetimePL: number
+  /** Closing vs original starting capital */
+  vsStart: number
+  /** How much this month beat/missed the monthly target */
+  vsMonthlyTarget: number
+  /** Profit above monthly target that rolls into capital (0 if not above target) */
+  surplusOverTarget: number
+}
+
+export function buildCapitalTrail(
+  baseCapital: number,
+  priorPL: number,
+  monthPL: number,
+  monthlyTarget: number
+): CapitalTrail {
+  const monthOpeningCapital = parseFloat((baseCapital + priorPL).toFixed(2))
+  const monthClosingCapital = parseFloat((monthOpeningCapital + monthPL).toFixed(2))
+  const lifetimePL = parseFloat((priorPL + monthPL).toFixed(2))
+  const vsStart = parseFloat((monthClosingCapital - baseCapital).toFixed(2))
+  const vsMonthlyTarget = parseFloat((monthPL - monthlyTarget).toFixed(2))
+  const surplusOverTarget = monthPL > monthlyTarget
+    ? parseFloat((monthPL - monthlyTarget).toFixed(2))
+    : 0
+
+  return {
+    baseCapital,
+    priorPL: parseFloat(priorPL.toFixed(2)),
+    monthOpeningCapital,
+    monthPL: parseFloat(monthPL.toFixed(2)),
+    monthClosingCapital,
+    lifetimePL,
+    vsStart,
+    vsMonthlyTarget,
+    surplusOverTarget,
+  }
+}
+
+
 export function formatCurrency(amount: number, currency = 'INR'): string {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
