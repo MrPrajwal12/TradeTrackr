@@ -17,10 +17,18 @@ type SyncBody = {
   include_unrealized?: boolean
   /** If true, only renew token (no positions sync). */
   renew_only?: boolean
+  /**
+   * If true and Dhan available capital > 0, update profile
+   * starting_capital + max_daily_loss (pct of capital).
+   */
+  apply_capital_to_profile?: boolean
+  /** Max daily loss as fraction of Dhan capital (default 0.02 = 2%). */
+  max_daily_loss_pct?: number
 }
 
 /** Renew when fewer than this many ms remain (default 6h). */
 const RENEW_WITHIN_MS = 6 * 60 * 60 * 1000
+const DEFAULT_MAX_DAILY_LOSS_PCT = 0.02
 
 type DhanPosition = {
   tradingSymbol?: string
@@ -384,6 +392,48 @@ Deno.serve(async (req) => {
 
   const headers = dhanHeaders(accessToken, clientId)
 
+  // --- Funds / capital (GET /v2/fundlimit) ---
+  let availableBalance = 0
+  let sodLimit = 0
+  let utilizedAmount = 0
+  let withdrawableBalance = 0
+  let collateralAmount = 0
+  try {
+    const fundsRes = await fetch("https://api.dhan.co/v2/fundlimit", {
+      method: "GET",
+      headers,
+    })
+    const fundsText = await fundsRes.text()
+    if (fundsRes.ok && fundsText) {
+      const funds = JSON.parse(fundsText) as Record<string, unknown>
+      availableBalance = Number(funds.availabelBalance ?? funds.availableBalance ?? 0) || 0
+      sodLimit = Number(funds.sodLimit ?? 0) || 0
+      utilizedAmount = Number(funds.utilizedAmount ?? 0) || 0
+      withdrawableBalance = Number(funds.withdrawableBalance ?? 0) || 0
+      collateralAmount = Number(funds.collateralAmount ?? 0) || 0
+    }
+  } catch {
+    /* positions sync can continue without funds */
+  }
+
+  // Prefer live available; fall back to start-of-day limit
+  const dhanCapital = availableBalance > 0 ? availableBalance : sodLimit
+  const lossPct =
+    typeof body.max_daily_loss_pct === "number" && body.max_daily_loss_pct > 0
+      ? body.max_daily_loss_pct
+      : DEFAULT_MAX_DAILY_LOSS_PCT
+  const suggestedMaxDailyLoss = parseFloat((dhanCapital * lossPct).toFixed(2))
+
+  if (body.apply_capital_to_profile && dhanCapital > 0) {
+    await userClient
+      .from("profiles")
+      .update({
+        starting_capital: dhanCapital,
+        max_daily_loss: suggestedMaxDailyLoss,
+      })
+      .eq("id", user.id)
+  }
+
   const dhanRes = await fetch("https://api.dhan.co/v2/positions", {
     method: "GET",
     headers,
@@ -493,6 +543,13 @@ Deno.serve(async (req) => {
 
   const monthlyTarget = Number(profile?.monthly_target) || 20920
   const dailyTarget = parseFloat((monthlyTarget / 22).toFixed(2))
+  const profileMaxLoss = Number(profile?.max_daily_loss) || 1255.2
+  const dailyLossAllowed =
+    body.apply_capital_to_profile && suggestedMaxDailyLoss > 0
+      ? suggestedMaxDailyLoss
+      : dhanCapital > 0 && suggestedMaxDailyLoss > 0
+        ? suggestedMaxDailyLoss
+        : profileMaxLoss
 
   const symbolHint =
     openSymbols.length > 0
@@ -521,7 +578,7 @@ Deno.serve(async (req) => {
       day_type: "Trading Day",
       daily_target_inr: dailyTarget,
       actual_pl: dayPl,
-      daily_loss_allowed: Number(profile?.max_daily_loss) || 1255.2,
+      daily_loss_allowed: dailyLossAllowed,
       notes: noteParts.join(" · "),
       broker_id: brokerId,
       source: "broker_auto",
@@ -565,5 +622,16 @@ Deno.serve(async (req) => {
     source,
     token_renewed: tokenRenewed,
     token_expiry: tokenExpiryIso,
+    funds: {
+      available_balance: availableBalance,
+      sod_limit: sodLimit,
+      utilized_amount: utilizedAmount,
+      withdrawable_balance: withdrawableBalance,
+      collateral_amount: collateralAmount,
+      capital: dhanCapital,
+      max_daily_loss_pct: lossPct,
+      suggested_max_daily_loss: suggestedMaxDailyLoss,
+      applied_to_profile: Boolean(body.apply_capital_to_profile && dhanCapital > 0),
+    },
   })
 })

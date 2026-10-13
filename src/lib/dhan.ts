@@ -1,5 +1,17 @@
 import { supabase } from '@/lib/supabase'
 
+export type DhanFunds = {
+  available_balance: number
+  sod_limit: number
+  utilized_amount: number
+  withdrawable_balance: number
+  collateral_amount: number
+  capital: number
+  max_daily_loss_pct: number
+  suggested_max_daily_loss: number
+  applied_to_profile: boolean
+}
+
 export type DhanSyncResult = {
   ok: true
   date: string
@@ -13,6 +25,7 @@ export type DhanSyncResult = {
   source?: 'positions' | 'trades' | 'empty'
   token_renewed?: boolean
   token_expiry?: string | null
+  funds?: DhanFunds
 }
 
 export type DhanRenewResult = {
@@ -50,12 +63,19 @@ async function readFunctionError(error: unknown, data: unknown): Promise<string>
 
 export async function syncDhanPositions(
   brokerId: string,
-  opts?: { includeUnrealized?: boolean }
+  opts?: {
+    includeUnrealized?: boolean
+    /** Write Dhan capital → profile starting_capital + 2% max daily loss */
+    applyCapitalToProfile?: boolean
+    maxDailyLossPct?: number
+  }
 ): Promise<DhanSyncResult> {
   const { data, error } = await supabase.functions.invoke('dhan-sync', {
     body: {
       broker_id: brokerId,
       include_unrealized: opts?.includeUnrealized !== false,
+      apply_capital_to_profile: opts?.applyCapitalToProfile === true,
+      max_daily_loss_pct: opts?.maxDailyLossPct,
     },
   })
 

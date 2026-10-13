@@ -24,7 +24,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { renewDhanToken, syncDhanPositions } from '@/lib/dhan'
+import { renewDhanToken, syncDhanPositions, type DhanFunds } from '@/lib/dhan'
 import {
   generateMonthDays,
   formatCurrency,
@@ -55,7 +55,7 @@ type MergedDay = ReturnType<typeof generateMonthDays>[0] & {
 
 export function TradingPage() {
   const { month } = useParams()
-  const { user, profile } = useAuthStore()
+  const { user, profile, fetchProfile } = useAuthStore()
   const [selectedMonth, setSelectedMonth] = useState(month || localYearMonth())
   const monthlyTarget = profile?.monthly_target || 20920
   const startingCapital = profile?.starting_capital || 4184
@@ -65,6 +65,7 @@ export function TradingPage() {
   const [entries, setEntries] = useState<MergedDay[]>([])
   const [monthOpeningCapital, setMonthOpeningCapital] = useState(4184)
   const [capitalTrail, setCapitalTrail] = useState<CapitalTrail | null>(null)
+  const [dhanFunds, setDhanFunds] = useState<DhanFunds | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -192,16 +193,27 @@ export function TradingPage() {
     }
     setSyncingDhan(true)
     try {
-      const result = await syncDhanPositions(dhanBrokerId)
+      // Pull P/L + fundlimit; if capital > 0, set profile capital & 2% max daily loss
+      const result = await syncDhanPositions(dhanBrokerId, {
+        applyCapitalToProfile: true,
+        maxDailyLossPct: 0.02,
+      })
+      if (result.funds) setDhanFunds(result.funds)
       const via =
         result.source === 'trades'
           ? ' (from trade book)'
           : result.source === 'empty'
             ? ' (no Dhan positions/trades today)'
             : ''
+      const fundsMsg = result.funds
+        ? ` · Capital ${formatCurrency(result.funds.capital)} · Max loss ${formatCurrency(result.funds.suggested_max_daily_loss)} (${Math.round(result.funds.max_daily_loss_pct * 100)}%)`
+        : ''
       toast.success(
-        `Dhan → ${result.date}: ${formatCurrency(result.actual_pl)}${via}`
+        `Dhan → ${result.date}: ${formatCurrency(result.actual_pl)}${via}${fundsMsg}`
       )
+      if (user && result.funds?.applied_to_profile) {
+        await fetchProfile(user.id)
+      }
       await loadEntries()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Dhan sync failed')
@@ -378,6 +390,39 @@ export function TradingPage() {
           <AlertTriangle className="size-4" />
           <AlertDescription className="font-medium">{breachAlert} Stop trading today.</AlertDescription>
         </Alert>
+      )}
+
+      {dhanFunds && (
+        <div className="rounded-2xl border bg-card p-4 sm:p-5">
+          <p className="text-sm font-medium">Dhan account (live)</p>
+          <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div>
+              <p className="text-xs text-muted-foreground">Available</p>
+              <p className="font-semibold">{formatCurrency(dhanFunds.available_balance)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Start of day</p>
+              <p className="font-semibold">{formatCurrency(dhanFunds.sod_limit)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Utilized</p>
+              <p className="font-semibold">{formatCurrency(dhanFunds.utilized_amount)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">
+                Max daily loss ({Math.round(dhanFunds.max_daily_loss_pct * 100)}%)
+              </p>
+              <p className="font-semibold text-destructive">
+                {formatCurrency(dhanFunds.suggested_max_daily_loss)}
+              </p>
+            </div>
+          </div>
+          {dhanFunds.capital <= 0 && (
+            <p className="text-xs text-muted-foreground mt-3">
+              Dhan reports ₹0 on this Client ID — journal still uses your Settings capital ({formatCurrency(startingCapital)}, max loss {formatCurrency(maxDailyLoss)}).
+            </p>
+          )}
+        </div>
       )}
 
       {isCurrentMonth && !loading && !insights.goalReached && focusNeed != null && (
