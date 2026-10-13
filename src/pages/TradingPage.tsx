@@ -13,6 +13,7 @@ import {
   Wallet,
   ArrowUpRight,
   ArrowDownRight,
+  RefreshCw,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
+import { syncDhanPositions } from '@/lib/dhan'
 import {
   generateMonthDays,
   formatCurrency,
@@ -70,9 +72,26 @@ export function TradingPage() {
   const [editNotes, setEditNotes] = useState<string>('')
   const [breachAlert, setBreachAlert] = useState<string | null>(null)
   const [showOffDays, setShowOffDays] = useState(false)
+  const [dhanBrokerId, setDhanBrokerId] = useState<string | null>(null)
+  const [syncingDhan, setSyncingDhan] = useState(false)
 
   const prevMonth = () => setSelectedMonth((m) => shiftYearMonth(m, -1))
   const nextMonth = () => setSelectedMonth((m) => shiftYearMonth(m, 1))
+
+  useEffect(() => {
+    if (!user) return
+    void supabase
+      .from('brokers')
+      .select('id, type, name, last_synced_at')
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+      .then(({ data }) => {
+        const dhan = (data || [])
+          .filter((b) => b.type === 'dhan' || String(b.name).toLowerCase() === 'dhan')
+          .sort((a, b) => String(b.last_synced_at || '').localeCompare(String(a.last_synced_at || '')))[0]
+        setDhanBrokerId(dhan?.id ?? null)
+      })
+  }, [user])
 
   const loadEntries = useCallback(async () => {
     if (!user || !profile) return
@@ -158,6 +177,25 @@ export function TradingPage() {
     setEditingId(entry.id ?? entry.date)
     setEditPL(entry.actual_pl?.toString() ?? '')
     setEditNotes(entry.notes || '')
+  }
+
+  const syncFromDhan = async () => {
+    if (!dhanBrokerId) {
+      toast.error('Connect Dhan under Brokers first')
+      return
+    }
+    setSyncingDhan(true)
+    try {
+      const result = await syncDhanPositions(dhanBrokerId)
+      toast.success(
+        `Dhan → ${result.date}: ${formatCurrency(result.actual_pl)} saved to journal`
+      )
+      await loadEntries()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Dhan sync failed')
+    } finally {
+      setSyncingDhan(false)
+    }
   }
 
   const persistMonthTotals = async (
@@ -298,14 +336,28 @@ export function TradingPage() {
             Log a day, then see what tomorrow needs to stay on target.
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-full border bg-card px-1 py-1">
-          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={prevMonth}>
-            <ChevronLeft className="size-4" />
-          </Button>
-          <span className="text-sm font-medium min-w-[132px] text-center px-2">{monthLabel}</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={nextMonth}>
-            <ChevronRight className="size-4" />
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {dhanBrokerId && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full h-9"
+              disabled={syncingDhan || saving}
+              onClick={() => void syncFromDhan()}
+            >
+              <RefreshCw className={cn('size-3.5 mr-1.5', syncingDhan && 'animate-spin')} />
+              {syncingDhan ? 'Syncing Dhan…' : 'Sync from Dhan'}
+            </Button>
+          )}
+          <div className="flex items-center gap-1 rounded-full border bg-card px-1 py-1">
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={prevMonth}>
+              <ChevronLeft className="size-4" />
+            </Button>
+            <span className="text-sm font-medium min-w-[132px] text-center px-2">{monthLabel}</span>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={nextMonth}>
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
         </div>
       </div>
 

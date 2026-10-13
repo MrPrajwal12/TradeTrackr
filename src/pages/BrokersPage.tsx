@@ -12,19 +12,26 @@ import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
+import { syncDhanPositions } from '@/lib/dhan'
+import { formatCurrency } from '@/lib/trading-utils'
 import type { Broker } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 const SUPPORTED_BROKERS = [
-  { name: 'Zerodha', logo: '🟢', method: 'api' as const, color: 'border-green-200 dark:border-green-800' },
-  { name: 'Upstox', logo: '🟣', method: 'api' as const, color: 'border-orange-200 dark:border-orange-800' },
-  { name: 'Groww', logo: '🌱', method: 'csv_import' as const, color: 'border-green-200 dark:border-green-800' },
-  { name: 'Angel One', logo: '👼', method: 'api' as const, color: 'border-red-200 dark:border-red-800' },
-  { name: 'Fyers', logo: '🦅', method: 'api' as const, color: 'border-blue-200 dark:border-blue-800' },
-  { name: '5Paisa', logo: '5️⃣', method: 'csv_import' as const, color: 'border-slate-200 dark:border-slate-800' },
-  { name: 'IIFL', logo: '🏦', method: 'csv_import' as const, color: 'border-yellow-200 dark:border-yellow-800' },
-  { name: 'Sharekhan', logo: '📊', method: 'csv_import' as const, color: 'border-cyan-200 dark:border-cyan-800' },
+  { name: 'Dhan', logo: '🔵', method: 'api' as const, color: 'border-blue-200 dark:border-blue-800', type: 'dhan' },
+  { name: 'Zerodha', logo: '🟢', method: 'api' as const, color: 'border-green-200 dark:border-green-800', type: 'zerodha' },
+  { name: 'Upstox', logo: '🟣', method: 'api' as const, color: 'border-orange-200 dark:border-orange-800', type: 'upstox' },
+  { name: 'Groww', logo: '🌱', method: 'csv_import' as const, color: 'border-green-200 dark:border-green-800', type: 'groww' },
+  { name: 'Angel One', logo: '👼', method: 'api' as const, color: 'border-red-200 dark:border-red-800', type: 'angel' },
+  { name: 'Fyers', logo: '🦅', method: 'api' as const, color: 'border-blue-200 dark:border-blue-800', type: 'fyers' },
+  { name: '5Paisa', logo: '5️⃣', method: 'csv_import' as const, color: 'border-slate-200 dark:border-slate-800', type: '5paisa' },
+  { name: 'IIFL', logo: '🏦', method: 'csv_import' as const, color: 'border-yellow-200 dark:border-yellow-800', type: 'iifl' },
+  { name: 'Sharekhan', logo: '📊', method: 'csv_import' as const, color: 'border-cyan-200 dark:border-cyan-800', type: 'sharekhan' },
 ]
+
+function isDhanBroker(broker: Broker) {
+  return broker.type === 'dhan' || broker.name.toLowerCase() === 'dhan'
+}
 
 export function BrokersPage() {
   const { user } = useAuthStore()
@@ -33,11 +40,14 @@ export function BrokersPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedBroker, setSelectedBroker] = useState<typeof SUPPORTED_BROKERS[0] | null>(null)
   const [step, setStep] = useState<'select' | 'configure'>('select')
+  const [clientId, setClientId] = useState('')
+  const [accessToken, setAccessToken] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [manualName, setManualName] = useState('')
   const [manualAccountId, setManualAccountId] = useState('')
   const [saving, setSaving] = useState(false)
+  const [syncingId, setSyncingId] = useState<string | null>(null)
 
   const loadBrokers = useCallback(async () => {
     if (!user) return
@@ -49,50 +59,104 @@ export function BrokersPage() {
 
   useEffect(() => { loadBrokers() }, [loadBrokers])
 
+  const resetModal = () => {
+    setModalOpen(false)
+    setStep('select')
+    setSelectedBroker(null)
+    setClientId('')
+    setAccessToken('')
+    setApiKey('')
+    setApiSecret('')
+    setManualName('')
+    setManualAccountId('')
+  }
+
   const addBroker = async (isManual = false) => {
     if (!user) return
     setSaving(true)
 
-    const brokerData = {
-      user_id: user.id,
-      name: isManual ? (manualName || 'My Broker') : (selectedBroker?.name || ''),
-      type: isManual ? 'manual' : (selectedBroker?.name.toLowerCase().replace(' ', '') || 'other'),
-      connection_method: isManual ? 'manual' : (selectedBroker?.method || 'manual'),
-      api_key: isManual ? undefined : apiKey,
-      api_secret: isManual ? undefined : apiSecret,
-      account_id: isManual ? manualAccountId : undefined,
-      is_active: true,
+    const isDhan = !isManual && selectedBroker?.type === 'dhan'
+
+    if (isDhan && (!clientId.trim() || !accessToken.trim())) {
+      setSaving(false)
+      toast.error('Enter Dhan Client ID and Access Token')
+      return
     }
+
+    const brokerData = isManual
+      ? {
+          user_id: user.id,
+          name: manualName || 'My Broker',
+          type: 'manual',
+          connection_method: 'manual' as const,
+          account_id: manualAccountId || '',
+          is_active: true,
+        }
+      : isDhan
+        ? {
+            user_id: user.id,
+            name: 'Dhan',
+            type: 'dhan',
+            connection_method: 'api' as const,
+            account_id: clientId.trim(),
+            api_key: clientId.trim(),
+            access_token: accessToken.trim(),
+            api_secret: '',
+            is_active: true,
+          }
+        : {
+            user_id: user.id,
+            name: selectedBroker?.name || '',
+            type: selectedBroker?.type || 'other',
+            connection_method: (selectedBroker?.method || 'manual') as 'api' | 'csv_import' | 'manual',
+            api_key: apiKey,
+            api_secret: apiSecret,
+            is_active: true,
+          }
 
     const { error } = await supabase.from('brokers').insert(brokerData)
     setSaving(false)
 
     if (error) {
-      toast.error('Failed to add broker')
-    } else {
-      toast.success(`${isManual ? manualName || 'Broker' : selectedBroker?.name} added successfully!`)
-      setModalOpen(false)
-      setStep('select')
-      setSelectedBroker(null)
-      setApiKey('')
-      setApiSecret('')
-      setManualName('')
-      setManualAccountId('')
-      loadBrokers()
+      toast.error(error.message || 'Failed to add broker')
+      return
     }
+
+    toast.success(`${isManual ? manualName || 'Broker' : selectedBroker?.name} connected`)
+    resetModal()
+    loadBrokers()
   }
 
   const deleteBroker = async (id: string) => {
     await supabase.from('brokers').delete().eq('id', id)
-    setBrokers(prev => prev.filter(b => b.id !== id))
+    setBrokers((prev) => prev.filter((b) => b.id !== id))
     toast.success('Broker removed')
+  }
+
+  const syncBroker = async (broker: Broker) => {
+    if (!isDhanBroker(broker)) {
+      toast.info('Live sync is available for Dhan right now. Other brokers coming soon.')
+      return
+    }
+    setSyncingId(broker.id)
+    try {
+      const result = await syncDhanPositions(broker.id)
+      toast.success(
+        `Dhan synced for ${result.date}: ${formatCurrency(result.actual_pl)} (realized ${formatCurrency(result.realized)}, unrealized ${formatCurrency(result.unrealized)})`
+      )
+      await loadBrokers()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Dhan sync failed')
+    } finally {
+      setSyncingId(null)
+    }
   }
 
   const getStatusBadge = (broker: Broker) => {
     if (!broker.is_active) return <Badge variant="destructive" className="text-xs">Inactive</Badge>
     if (broker.connection_method === 'manual') return <Badge variant="secondary" className="text-xs">Manual</Badge>
-    if (broker.last_synced_at) return <Badge className="text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0">Connected</Badge>
-    return <Badge variant="outline" className="text-xs">Pending Sync</Badge>
+    if (broker.last_synced_at) return <Badge className="text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-0">Synced</Badge>
+    return <Badge variant="outline" className="text-xs">Ready to sync</Badge>
   }
 
   return (
@@ -100,14 +164,15 @@ export function BrokersPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Broker Connect</h1>
-          <p className="text-sm text-muted-foreground">Connect your broker accounts for auto-sync or manual CSV import</p>
+          <p className="text-sm text-muted-foreground">
+            Connect Dhan to pull today&apos;s positions into your trading journal
+          </p>
         </div>
         <Button onClick={() => { setStep('select'); setModalOpen(true) }}>
           <Plus className="size-4 mr-2" /> Add Broker
         </Button>
       </div>
 
-      {/* Broker Cards */}
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -119,21 +184,23 @@ export function BrokersPage() {
           <CardContent className="pt-12 pb-12 text-center">
             <Link2 className="size-10 text-muted-foreground mx-auto mb-4" />
             <h3 className="font-semibold mb-2">No brokers connected</h3>
-            <p className="text-sm text-muted-foreground mb-4">Connect your broker to automatically sync your trades</p>
+            <p className="text-sm text-muted-foreground mb-4">
+              Connect Dhan with Client ID + Access Token to auto-fill today&apos;s P/L
+            </p>
             <Button onClick={() => { setStep('select'); setModalOpen(true) }}>
-              <Plus className="size-4 mr-2" /> Connect Your First Broker
+              <Plus className="size-4 mr-2" /> Connect Dhan
             </Button>
           </CardContent>
         </Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {brokers.map(broker => (
+          {brokers.map((broker) => (
             <Card key={broker.id} className="hover:shadow-md transition-shadow">
               <CardContent className="pt-5">
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3">
                     <div className="flex size-10 items-center justify-center rounded-lg bg-muted text-xl">
-                      {SUPPORTED_BROKERS.find(b => b.name.toLowerCase() === broker.name.toLowerCase())?.logo || '🏦'}
+                      {SUPPORTED_BROKERS.find((b) => b.name.toLowerCase() === broker.name.toLowerCase())?.logo || '🏦'}
                     </div>
                     <div>
                       <p className="font-semibold">{broker.name}</p>
@@ -144,7 +211,7 @@ export function BrokersPage() {
                 </div>
 
                 {broker.account_id && (
-                  <p className="text-xs text-muted-foreground mb-2">Account: {broker.account_id}</p>
+                  <p className="text-xs text-muted-foreground mb-2">Client ID: {broker.account_id}</p>
                 )}
 
                 {broker.last_synced_at && (
@@ -155,12 +222,19 @@ export function BrokersPage() {
                 )}
 
                 <div className="flex gap-2 mt-3">
-                  {broker.connection_method !== 'manual' && (
-                    <Button variant="outline" size="sm" className="h-7 text-xs flex-1" onClick={() => toast.info('Sync feature coming soon!')}>
-                      <RefreshCw className="size-3 mr-1.5" /> Sync Now
+                  {broker.connection_method === 'api' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs flex-1"
+                      disabled={syncingId === broker.id}
+                      onClick={() => syncBroker(broker)}
+                    >
+                      <RefreshCw className={cn('size-3 mr-1.5', syncingId === broker.id && 'animate-spin')} />
+                      {syncingId === broker.id ? 'Syncing…' : 'Sync Now'}
                     </Button>
                   )}
-                  {broker.connection_method !== 'api' && (
+                  {broker.connection_method === 'csv_import' && (
                     <Button variant="outline" size="sm" className="h-7 text-xs flex-1" onClick={() => toast.info('CSV import coming soon!')}>
                       <Upload className="size-3 mr-1.5" /> Import CSV
                     </Button>
@@ -175,33 +249,25 @@ export function BrokersPage() {
         </div>
       )}
 
-      {/* How it works */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Supported Integrations</CardTitle>
-          <CardDescription>Connect via API for real-time sync, or import CSV statements manually</CardDescription>
+          <CardTitle className="text-base">How Dhan sync works</CardTitle>
+          <CardDescription>
+            We call Dhan&apos;s positions API and write today&apos;s realized + unrealized P/L into your Trading Journal (source: broker auto).
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {SUPPORTED_BROKERS.map(b => (
-              <div key={b.name} className={cn('flex items-center gap-2 p-3 rounded-lg border', b.color)}>
-                <span className="text-lg">{b.logo}</span>
-                <div>
-                  <p className="text-xs font-medium">{b.name}</p>
-                  <p className="text-[10px] text-muted-foreground capitalize">{b.method.replace('_', ' ')}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+        <CardContent className="text-sm text-muted-foreground space-y-2">
+          <p>1. Generate an Access Token from web.dhan.co → My Profile → Access DhanHQ APIs.</p>
+          <p>2. Connect with your Client ID + token here (stored on your broker row).</p>
+          <p>3. Tap Sync Now — today&apos;s journal day updates automatically. You can still edit manually.</p>
         </CardContent>
       </Card>
 
-      {/* Add Broker Dialog */}
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
+      <Dialog open={modalOpen} onOpenChange={(open) => { if (!open) resetModal(); else setModalOpen(true) }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Connect Broker</DialogTitle>
-            <DialogDescription>Choose your broker and connection method</DialogDescription>
+            <DialogDescription>Prefer Dhan for live position sync</DialogDescription>
           </DialogHeader>
 
           <Tabs defaultValue="auto">
@@ -215,7 +281,7 @@ export function BrokersPage() {
                 <div>
                   <p className="text-sm text-muted-foreground mb-4">Select your broker:</p>
                   <div className="grid grid-cols-2 gap-2">
-                    {SUPPORTED_BROKERS.map(b => (
+                    {SUPPORTED_BROKERS.map((b) => (
                       <button
                         key={b.name}
                         onClick={() => { setSelectedBroker(b); setStep('configure') }}
@@ -227,7 +293,9 @@ export function BrokersPage() {
                         <span className="text-xl">{b.logo}</span>
                         <div>
                           <p className="text-sm font-medium">{b.name}</p>
-                          <p className="text-[10px] text-muted-foreground capitalize">{b.method.replace('_', ' ')}</p>
+                          <p className="text-[10px] text-muted-foreground capitalize">
+                            {b.type === 'dhan' ? 'positions API' : b.method.replace('_', ' ')}
+                          </p>
                         </div>
                       </button>
                     ))}
@@ -245,30 +313,55 @@ export function BrokersPage() {
                     </div>
                   </div>
 
-                  {selectedBroker.method === 'api' ? (
+                  {selectedBroker.type === 'dhan' ? (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Dhan Client ID</Label>
+                        <Input
+                          placeholder="e.g. 1104029799"
+                          value={clientId}
+                          onChange={(e) => setClientId(e.target.value)}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Access Token</Label>
+                        <Input
+                          type="password"
+                          placeholder="Paste JWT access token from DhanHQ"
+                          value={accessToken}
+                          onChange={(e) => setAccessToken(e.target.value)}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Token is stored on your broker row and used only by the sync function. Refresh the token when Dhan expires it.
+                      </p>
+                    </>
+                  ) : selectedBroker.method === 'api' ? (
                     <>
                       <div className="space-y-2">
                         <Label>API Key</Label>
-                        <Input placeholder={`Enter ${selectedBroker.name} API Key`} value={apiKey} onChange={e => setApiKey(e.target.value)} />
+                        <Input placeholder={`Enter ${selectedBroker.name} API Key`} value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
                       </div>
                       <div className="space-y-2">
                         <Label>API Secret</Label>
-                        <Input type="password" placeholder="Enter API Secret" value={apiSecret} onChange={e => setApiSecret(e.target.value)} />
+                        <Input type="password" placeholder="Enter API Secret" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} />
                       </div>
-                      <p className="text-xs text-muted-foreground">API keys are stored securely. Your trading data will sync automatically after connecting.</p>
+                      <p className="text-xs text-muted-foreground">Live sync for this broker is not wired yet — connection is saved for later.</p>
                     </>
                   ) : (
                     <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
                       <Upload className="size-8 text-muted-foreground mx-auto mb-2" />
                       <p className="text-sm font-medium mb-1">Upload CSV Statement</p>
-                      <p className="text-xs text-muted-foreground mb-3">Download your statement from {selectedBroker.name} and upload here</p>
+                      <p className="text-xs text-muted-foreground mb-3">CSV parsing coming soon</p>
                       <Button variant="outline" size="sm" onClick={() => toast.info('CSV parsing coming soon!')}>Choose File</Button>
                     </div>
                   )}
 
                   <Separator />
                   <div className="flex gap-3">
-                    <Button variant="outline" className="flex-1" onClick={() => setModalOpen(false)}>Cancel</Button>
+                    <Button variant="outline" className="flex-1" onClick={resetModal}>Cancel</Button>
                     <Button className="flex-1" onClick={() => addBroker(false)} disabled={saving}>
                       {saving ? 'Connecting...' : 'Connect Broker'}
                     </Button>
@@ -278,18 +371,18 @@ export function BrokersPage() {
             </TabsContent>
 
             <TabsContent value="manual" className="mt-4 space-y-4">
-              <p className="text-sm text-muted-foreground">Add a broker manually for tracking purposes. You can import CSV statements anytime.</p>
+              <p className="text-sm text-muted-foreground">Add a broker manually for tracking. Prefer Dhan API for auto P/L.</p>
               <div className="space-y-2">
                 <Label>Broker Name</Label>
-                <Input placeholder="e.g., My Broker, HDFC Securities" value={manualName} onChange={e => setManualName(e.target.value)} />
+                <Input placeholder="e.g., My Broker" value={manualName} onChange={(e) => setManualName(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <Label>Account ID (optional)</Label>
-                <Input placeholder="e.g., ZX1234567" value={manualAccountId} onChange={e => setManualAccountId(e.target.value)} />
+                <Input placeholder="e.g., ZX1234567" value={manualAccountId} onChange={(e) => setManualAccountId(e.target.value)} />
               </div>
               <Separator />
               <div className="flex gap-3">
-                <Button variant="outline" className="flex-1" onClick={() => setModalOpen(false)}>Cancel</Button>
+                <Button variant="outline" className="flex-1" onClick={resetModal}>Cancel</Button>
                 <Button className="flex-1" onClick={() => addBroker(true)} disabled={saving || !manualName}>
                   {saving ? 'Adding...' : 'Add Broker'}
                 </Button>
