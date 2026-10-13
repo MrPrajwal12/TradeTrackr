@@ -24,7 +24,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
-import { syncDhanPositions } from '@/lib/dhan'
+import { renewDhanToken, syncDhanPositions } from '@/lib/dhan'
 import {
   generateMonthDays,
   formatCurrency,
@@ -82,7 +82,7 @@ export function TradingPage() {
     if (!user) return
     void supabase
       .from('brokers')
-      .select('id, type, name, last_synced_at')
+      .select('id, type, name, last_synced_at, token_expiry')
       .eq('user_id', user.id)
       .eq('is_active', true)
       .then(({ data }) => {
@@ -90,6 +90,12 @@ export function TradingPage() {
           .filter((b) => b.type === 'dhan' || String(b.name).toLowerCase() === 'dhan')
           .sort((a, b) => String(b.last_synced_at || '').localeCompare(String(a.last_synced_at || '')))[0]
         setDhanBrokerId(dhan?.id ?? null)
+        // Keep Dhan JWT alive: renew when expiry is within ~6h (server-side)
+        if (dhan?.id) {
+          void renewDhanToken(dhan.id).catch(() => {
+            /* ignore — user can reconnect if fully expired */
+          })
+        }
       })
   }, [user])
 

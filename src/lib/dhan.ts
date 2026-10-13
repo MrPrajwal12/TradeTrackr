@@ -11,6 +11,15 @@ export type DhanSyncResult = {
   open_positions: number
   include_unrealized: boolean
   source?: 'positions' | 'trades' | 'empty'
+  token_renewed?: boolean
+  token_expiry?: string | null
+}
+
+export type DhanRenewResult = {
+  ok: true
+  renewed: boolean
+  token_expiry: string | null
+  client_id: string
 }
 
 async function readFunctionError(error: unknown, data: unknown): Promise<string> {
@@ -59,4 +68,19 @@ export async function syncDhanPositions(
   }
 
   return data as DhanSyncResult
+}
+
+/** Renew Dhan access token if close to expiry (server decides the window). */
+export async function renewDhanToken(brokerId: string): Promise<DhanRenewResult> {
+  const { data, error } = await supabase.functions.invoke('dhan-sync', {
+    body: { broker_id: brokerId, renew_only: true },
+  })
+
+  if (error) {
+    throw new Error(await readFunctionError(error, data))
+  }
+  if (data?.error) {
+    throw new Error(String(data.error))
+  }
+  return data as DhanRenewResult
 }

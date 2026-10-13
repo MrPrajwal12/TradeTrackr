@@ -119,6 +119,7 @@ export function BrokersPage() {
       api_key?: string
       access_token?: string
       api_secret?: string
+      token_expiry?: string
       is_active: boolean
     } = isManual
       ? {
@@ -139,6 +140,9 @@ export function BrokersPage() {
             api_key: dhanClientId,
             access_token: tokenTrim,
             api_secret: '',
+            token_expiry: parsed?.expiresAt
+              ? parsed.expiresAt.toISOString()
+              : undefined,
             is_active: true,
           }
         : {

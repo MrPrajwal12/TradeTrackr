@@ -15,7 +15,12 @@ declare const Deno: {
 type SyncBody = {
   broker_id?: string
   include_unrealized?: boolean
+  /** If true, only renew token (no positions sync). */
+  renew_only?: boolean
 }
+
+/** Renew when fewer than this many ms remain (default 6h). */
+const RENEW_WITHIN_MS = 6 * 60 * 60 * 1000
 
 type DhanPosition = {
   tradingSymbol?: string
@@ -72,6 +77,62 @@ function dhanHeaders(accessToken: string, clientId: string) {
     "access-token": accessToken,
     "client-id": clientId,
   }
+}
+
+function parseJwtPayload(jwt: string): {
+  dhanClientId?: string
+  expMs?: number
+} {
+  try {
+    const part = jwt.split(".")[1]
+    if (!part) return {}
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/")
+    const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4))
+    const payload = JSON.parse(atob(b64 + pad)) as {
+      dhanClientId?: string | number
+      exp?: number
+    }
+    return {
+      dhanClientId:
+        payload.dhanClientId != null ? String(payload.dhanClientId) : undefined,
+      expMs: typeof payload.exp === "number" ? payload.exp * 1000 : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+async function renewDhanToken(
+  accessToken: string,
+  clientId: string
+): Promise<{ token: string; expiryTime: string | null } | { error: string }> {
+  const res = await fetch("https://api.dhan.co/v2/RenewToken", {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "access-token": accessToken,
+      dhanClientId: clientId,
+      "client-id": clientId,
+    },
+  })
+  const text = await res.text()
+  let body: Record<string, unknown> = {}
+  try {
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+  } catch {
+    return { error: `RenewToken invalid JSON (${res.status})` }
+  }
+  if (!res.ok) {
+    return {
+      error:
+        String(body.errorMessage || body.message || `RenewToken ${res.status}`),
+    }
+  }
+  const token = String(body.token || body.accessToken || "").trim()
+  if (!token) return { error: "RenewToken returned no token" }
+  const expiryTime =
+    typeof body.expiryTime === "string" ? body.expiryTime : null
+  return { token, expiryTime }
 }
 
 function asArray<T>(payload: unknown): T[] {
@@ -186,7 +247,7 @@ Deno.serve(async (req) => {
   const { data: broker, error: brokerErr } = await userClient
     .from("brokers")
     .select(
-      "id, user_id, name, type, account_id, api_key, access_token, api_secret"
+      "id, user_id, name, type, account_id, api_key, access_token, api_secret, token_expiry"
     )
     .eq("id", brokerId)
     .eq("user_id", user.id)
@@ -222,7 +283,7 @@ Deno.serve(async (req) => {
   }
 
   // Prefer broker row; optional project secrets as fallback (Supabase function secrets)
-  const accessToken = String(
+  let accessToken = String(
     broker.access_token ||
       broker.api_secret ||
       Deno.env.get("DHAN_ACCESS_TOKEN") ||
@@ -231,22 +292,8 @@ Deno.serve(async (req) => {
     .trim()
     .replace(/^"+|"+$/g, "")
 
-  function clientIdFromJwt(jwt: string): string {
-    try {
-      const part = jwt.split(".")[1]
-      if (!part) return ""
-      const b64 = part.replace(/-/g, "+").replace(/_/g, "/")
-      const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4))
-      const payload = JSON.parse(atob(b64 + pad)) as {
-        dhanClientId?: string | number
-      }
-      return payload.dhanClientId != null ? String(payload.dhanClientId) : ""
-    } catch {
-      return ""
-    }
-  }
-
-  const jwtClientId = clientIdFromJwt(accessToken)
+  const jwtMeta = parseJwtPayload(accessToken)
+  const jwtClientId = jwtMeta.dhanClientId || ""
   const storedClientId = String(
     broker.account_id || broker.api_key || Deno.env.get("DHAN_CLIENT_ID") || ""
   ).trim()
@@ -272,12 +319,67 @@ Deno.serve(async (req) => {
       400
     )
   }
-  if (jwtClientId && storedClientId && jwtClientId !== storedClientId) {
-    // Auto-correct stored id so next sync / UI stay consistent
+
+  const storedExpiryMs = broker.token_expiry
+    ? new Date(String(broker.token_expiry)).getTime()
+    : NaN
+  const expMs = jwtMeta.expMs || (Number.isFinite(storedExpiryMs) ? storedExpiryMs : NaN)
+  const msLeft = Number.isFinite(expMs) ? expMs - Date.now() : NaN
+  const shouldRenew =
+    body.renew_only === true ||
+    !Number.isFinite(msLeft) ||
+    msLeft <= RENEW_WITHIN_MS
+
+  let tokenRenewed = false
+  let tokenExpiryIso: string | null = null
+
+  if (shouldRenew) {
+    if (Number.isFinite(msLeft) && msLeft <= 0) {
+      return json(
+        {
+          error:
+            "Dhan access token expired. Generate a new token on web.dhan.co and reconnect under Brokers. (Renew only works while the token is still active.)",
+        },
+        401
+      )
+    }
+    const renewed = await renewDhanToken(accessToken, clientId)
+    if ("error" in renewed) {
+      // If renew_only was requested, fail hard; otherwise continue with current token if still valid
+      if (body.renew_only || (Number.isFinite(msLeft) && msLeft < 30 * 60 * 1000)) {
+        return json({ error: renewed.error }, 502)
+      }
+    } else {
+      accessToken = renewed.token
+      tokenRenewed = true
+      const newMeta = parseJwtPayload(accessToken)
+      tokenExpiryIso =
+        renewed.expiryTime ||
+        (newMeta.expMs ? new Date(newMeta.expMs).toISOString() : null)
+      await userClient
+        .from("brokers")
+        .update({
+          access_token: accessToken,
+          account_id: clientId,
+          api_key: clientId,
+          token_expiry: tokenExpiryIso,
+        })
+        .eq("id", brokerId)
+    }
+  } else if (jwtClientId && storedClientId && jwtClientId !== storedClientId) {
     await userClient
       .from("brokers")
       .update({ account_id: jwtClientId, api_key: jwtClientId })
       .eq("id", brokerId)
+  }
+
+  if (body.renew_only) {
+    return json({
+      ok: true,
+      renewed: tokenRenewed,
+      token_expiry: tokenExpiryIso,
+      client_id: clientId,
+    })
   }
 
   const headers = dhanHeaders(accessToken, clientId)
@@ -461,5 +563,7 @@ Deno.serve(async (req) => {
     open_positions: openSymbols.length,
     include_unrealized: includeUnrealized,
     source,
+    token_renewed: tokenRenewed,
+    token_expiry: tokenExpiryIso,
   })
 })
