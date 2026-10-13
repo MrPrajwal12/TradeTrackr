@@ -221,8 +221,38 @@ Deno.serve(async (req) => {
     )
   }
 
-  const clientId = String(broker.account_id || broker.api_key || "").trim()
-  const accessToken = String(broker.access_token || broker.api_secret || "").trim()
+  // Prefer broker row; optional project secrets as fallback (Supabase function secrets)
+  const accessToken = String(
+    broker.access_token ||
+      broker.api_secret ||
+      Deno.env.get("DHAN_ACCESS_TOKEN") ||
+      ""
+  )
+    .trim()
+    .replace(/^"+|"+$/g, "")
+
+  function clientIdFromJwt(jwt: string): string {
+    try {
+      const part = jwt.split(".")[1]
+      if (!part) return ""
+      const b64 = part.replace(/-/g, "+").replace(/_/g, "/")
+      const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4))
+      const payload = JSON.parse(atob(b64 + pad)) as {
+        dhanClientId?: string | number
+      }
+      return payload.dhanClientId != null ? String(payload.dhanClientId) : ""
+    } catch {
+      return ""
+    }
+  }
+
+  const jwtClientId = clientIdFromJwt(accessToken)
+  const storedClientId = String(
+    broker.account_id || broker.api_key || Deno.env.get("DHAN_CLIENT_ID") || ""
+  ).trim()
+  // Token embeds the real client id — always prefer it when present
+  const clientId = jwtClientId || storedClientId
+
   if (!clientId || !accessToken) {
     return json(
       {
@@ -241,6 +271,13 @@ Deno.serve(async (req) => {
       },
       400
     )
+  }
+  if (jwtClientId && storedClientId && jwtClientId !== storedClientId) {
+    // Auto-correct stored id so next sync / UI stay consistent
+    await userClient
+      .from("brokers")
+      .update({ account_id: jwtClientId, api_key: jwtClientId })
+      .eq("id", brokerId)
   }
 
   const headers = dhanHeaders(accessToken, clientId)

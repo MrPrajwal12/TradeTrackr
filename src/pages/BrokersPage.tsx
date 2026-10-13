@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAuthStore } from '@/store/authStore'
 import { supabase } from '@/lib/supabase'
 import { syncDhanPositions } from '@/lib/dhan'
+import { parseDhanAccessToken } from '@/lib/dhan-token'
 import { formatCurrency } from '@/lib/trading-utils'
 import type { Broker } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -71,15 +72,41 @@ export function BrokersPage() {
     setManualAccountId('')
   }
 
+  const onDhanTokenChange = (value: string) => {
+    setAccessToken(value)
+    const parsed = parseDhanAccessToken(value)
+    if (parsed.clientId) setClientId(parsed.clientId)
+  }
+
   const addBroker = async (isManual = false) => {
     if (!user) return
     setSaving(true)
 
     const isDhan = !isManual && selectedBroker?.type === 'dhan'
+    const tokenTrim = accessToken.trim().replace(/^"+|"+$/g, '')
+    const parsed = isDhan ? parseDhanAccessToken(tokenTrim) : null
+    const dhanClientId = (parsed?.clientId || clientId).trim()
 
-    if (isDhan && (!clientId.trim() || !accessToken.trim())) {
+    if (isDhan && (!dhanClientId || !tokenTrim)) {
       setSaving(false)
       toast.error('Enter Dhan Client ID and Access Token')
+      return
+    }
+    if (isDhan && tokenTrim.length < 40) {
+      setSaving(false)
+      toast.error('Paste the full DhanHQ JWT access token (not the Client ID)')
+      return
+    }
+    if (
+      isDhan &&
+      parsed?.clientId &&
+      clientId.trim() &&
+      parsed.clientId !== clientId.trim()
+    ) {
+      setSaving(false)
+      toast.error(
+        `Client ID must match the token (token has ${parsed.clientId}, you entered ${clientId.trim()})`
+      )
       return
     }
 
@@ -108,9 +135,9 @@ export function BrokersPage() {
             name: 'Dhan',
             type: 'dhan',
             connection_method: 'api',
-            account_id: clientId.trim(),
-            api_key: clientId.trim(),
-            access_token: accessToken.trim(),
+            account_id: dhanClientId,
+            api_key: dhanClientId,
+            access_token: tokenTrim,
             api_secret: '',
             is_active: true,
           }
@@ -123,6 +150,22 @@ export function BrokersPage() {
             api_secret: apiSecret,
             is_active: true,
           }
+
+    if (isDhan) {
+      const existing = brokers.find((b) => isDhanBroker(b))
+      const { error } = existing
+        ? await supabase.from('brokers').update(brokerData).eq('id', existing.id)
+        : await supabase.from('brokers').insert(brokerData)
+      setSaving(false)
+      if (error) {
+        toast.error(error.message || 'Failed to save Dhan')
+        return
+      }
+      toast.success(existing ? 'Dhan credentials updated' : 'Dhan connected')
+      resetModal()
+      loadBrokers()
+      return
+    }
 
     const { error } = await supabase.from('brokers').insert(brokerData)
     setSaving(false)
@@ -332,26 +375,26 @@ export function BrokersPage() {
                   {selectedBroker.type === 'dhan' ? (
                     <>
                       <div className="space-y-2">
+                        <Label>Access Token</Label>
+                        <Input
+                          type="password"
+                          placeholder="Paste JWT from web.dhan.co → DhanHQ APIs"
+                          value={accessToken}
+                          onChange={(e) => onDhanTokenChange(e.target.value)}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className="space-y-2">
                         <Label>Dhan Client ID</Label>
                         <Input
-                          placeholder="e.g. 1104029799"
+                          placeholder="Auto-filled from token"
                           value={clientId}
                           onChange={(e) => setClientId(e.target.value)}
                           autoComplete="off"
                         />
                       </div>
-                      <div className="space-y-2">
-                        <Label>Access Token</Label>
-                        <Input
-                          type="password"
-                          placeholder="Paste JWT access token from DhanHQ"
-                          value={accessToken}
-                          onChange={(e) => setAccessToken(e.target.value)}
-                          autoComplete="off"
-                        />
-                      </div>
                       <p className="text-xs text-muted-foreground">
-                        Token is stored on your broker row and used only by the sync function. Refresh the token when Dhan expires it.
+                        Client ID is read from the JWT. It must be the same account you trade on. Do not put the token in VITE_ env vars.
                       </p>
                     </>
                   ) : selectedBroker.method === 'api' ? (
