@@ -37,7 +37,6 @@ function json(data: unknown, status = 200) {
 }
 
 function localISODateIST(d = new Date()): string {
-  // Asia/Kolkata calendar date for the journal day
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
@@ -52,7 +51,6 @@ function localISODateIST(d = new Date()): string {
 
 function weekdayIST(isoDate: string): string {
   const [y, m, d] = isoDate.split("-").map(Number)
-  // Noon UTC avoids DST edge cases; weekday label for IST calendar date
   const utc = new Date(Date.UTC(y, m - 1, d, 6, 30))
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][utc.getUTCDay()]
 }
@@ -66,9 +64,9 @@ Deno.serve(async (req) => {
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
-  if (!supabaseUrl || !anonKey || !serviceKey) {
+  const anonKey =
+    Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SB_PUBLISHABLE_KEY")
+  if (!supabaseUrl || !anonKey) {
     return json({ error: "Supabase env not configured" }, 500)
   }
 
@@ -82,7 +80,12 @@ Deno.serve(async (req) => {
     data: { user },
     error: userErr,
   } = await userClient.auth.getUser()
-  if (userErr || !user) return json({ error: "Unauthorized" }, 401)
+  if (userErr || !user) {
+    return json(
+      { error: "Unauthorized", details: userErr?.message || "No user" },
+      401
+    )
+  }
 
   let body: SyncBody
   try {
@@ -95,33 +98,63 @@ Deno.serve(async (req) => {
   if (!brokerId) return json({ error: "broker_id is required" }, 400)
   const includeUnrealized = body.include_unrealized !== false
 
-  const admin = createClient(supabaseUrl, serviceKey)
-
-  const { data: broker, error: brokerErr } = await admin
+  // Use the caller's JWT + RLS (avoids service-role misconfig returning empty rows)
+  const { data: broker, error: brokerErr } = await userClient
     .from("brokers")
-    .select("*")
+    .select(
+      "id, user_id, name, type, account_id, api_key, access_token, api_secret"
+    )
     .eq("id", brokerId)
     .eq("user_id", user.id)
     .maybeSingle()
 
-  if (brokerErr || !broker) {
-    return json({ error: "Broker not found" }, 404)
+  if (brokerErr) {
+    return json(
+      { error: "Failed to load broker", details: brokerErr.message },
+      500
+    )
+  }
+  if (!broker) {
+    return json(
+      {
+        error: "Broker not found for this account",
+        broker_id: brokerId,
+        user_id: user.id,
+      },
+      404
+    )
   }
 
-  const isDhan =
-    String(broker.type).toLowerCase() === "dhan" ||
-    String(broker.name).toLowerCase() === "dhan"
+  const typeName = `${broker.type || ""} ${broker.name || ""}`.toLowerCase()
+  const isDhan = typeName.includes("dhan")
   if (!isDhan) {
-    return json({ error: "This sync endpoint only supports Dhan" }, 400)
+    return json(
+      {
+        error: "This sync endpoint only supports Dhan",
+        type: broker.type,
+        name: broker.name,
+      },
+      400
+    )
   }
 
-  const clientId = (broker.account_id || broker.api_key || "").trim()
-  const accessToken = (broker.access_token || broker.api_secret || "").trim()
+  const clientId = String(broker.account_id || broker.api_key || "").trim()
+  const accessToken = String(broker.access_token || broker.api_secret || "").trim()
   if (!clientId || !accessToken) {
     return json(
       {
         error:
-          "Dhan Client ID and Access Token are required. Update the broker connection.",
+          "Dhan Client ID and Access Token are required. Reconnect under Brokers.",
+      },
+      400
+    )
+  }
+  if (accessToken.length < 40) {
+    return json(
+      {
+        error:
+          "Dhan Access Token looks too short. Paste the full token from web.dhan.co (Profile → DhanHQ APIs), not the Client ID.",
+        token_length: accessToken.length,
       },
       400
     )
@@ -142,24 +175,26 @@ Deno.serve(async (req) => {
   try {
     dhanJson = dhanText ? JSON.parse(dhanText) : []
   } catch {
-    await admin.from("broker_sync_logs").insert({
+    await userClient.from("broker_sync_logs").insert({
       broker_id: brokerId,
       status: "failed",
       records_imported: 0,
       error_message: `Invalid JSON from Dhan (${dhanRes.status})`,
     })
     return json(
-      { error: "Dhan returned invalid JSON", status: dhanRes.status, details: dhanText.slice(0, 500) },
+      {
+        error: "Dhan returned invalid JSON",
+        status: dhanRes.status,
+        details: dhanText.slice(0, 500),
+      },
       502
     )
   }
 
   if (!dhanRes.ok) {
     const errObj = dhanJson as { errorMessage?: string; errorCode?: string }
-    const msg =
-      errObj?.errorMessage ||
-      `Dhan API error ${dhanRes.status}`
-    await admin.from("broker_sync_logs").insert({
+    const msg = errObj?.errorMessage || `Dhan API error ${dhanRes.status}`
+    await userClient.from("broker_sync_logs").insert({
       broker_id: brokerId,
       status: "failed",
       records_imported: 0,
@@ -178,7 +213,7 @@ Deno.serve(async (req) => {
   const positions: DhanPosition[] = Array.isArray(dhanJson)
     ? (dhanJson as DhanPosition[])
     : Array.isArray((dhanJson as { data?: DhanPosition[] })?.data)
-      ? ((dhanJson as { data: DhanPosition[] }).data)
+      ? (dhanJson as { data: DhanPosition[] }).data
       : []
 
   let realized = 0
@@ -199,24 +234,25 @@ Deno.serve(async (req) => {
   const today = localISODateIST()
   const weekday = weekdayIST(today)
 
-  const { data: profile } = await admin
+  const { data: profile } = await userClient
     .from("profiles")
     .select("monthly_target, max_daily_loss, starting_capital")
     .eq("id", user.id)
     .maybeSingle()
 
   const monthlyTarget = Number(profile?.monthly_target) || 20920
-  // Approximate daily target; Trading page regenerates exact targets on load
   const dailyTarget = parseFloat((monthlyTarget / 22).toFixed(2))
 
   const noteParts = [
     "Synced from Dhan positions",
     `realized ${realized.toFixed(2)}`,
     includeUnrealized ? `unrealized ${unrealized.toFixed(2)}` : null,
-    openSymbols.length ? `open: ${openSymbols.slice(0, 8).join(", ")}${openSymbols.length > 8 ? "…" : ""}` : "no open positions",
+    openSymbols.length
+      ? `open: ${openSymbols.slice(0, 8).join(", ")}${openSymbols.length > 8 ? "…" : ""}`
+      : "no open positions",
   ].filter(Boolean)
 
-  const { error: upsertErr } = await admin.from("trade_entries").upsert(
+  const { error: upsertErr } = await userClient.from("trade_entries").upsert(
     {
       user_id: user.id,
       date: today,
@@ -234,7 +270,7 @@ Deno.serve(async (req) => {
   )
 
   if (upsertErr) {
-    await admin.from("broker_sync_logs").insert({
+    await userClient.from("broker_sync_logs").insert({
       broker_id: brokerId,
       status: "failed",
       records_imported: 0,
@@ -243,12 +279,12 @@ Deno.serve(async (req) => {
     return json({ error: upsertErr.message }, 500)
   }
 
-  await admin
+  await userClient
     .from("brokers")
     .update({ last_synced_at: new Date().toISOString(), is_active: true })
     .eq("id", brokerId)
 
-  await admin.from("broker_sync_logs").insert({
+  await userClient.from("broker_sync_logs").insert({
     broker_id: brokerId,
     status: "success",
     records_imported: 1,

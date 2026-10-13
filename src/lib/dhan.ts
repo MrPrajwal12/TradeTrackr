@@ -11,6 +11,32 @@ export type DhanSyncResult = {
   include_unrealized: boolean
 }
 
+async function readFunctionError(error: unknown, data: unknown): Promise<string> {
+  if (data && typeof data === 'object' && 'error' in data && (data as { error?: unknown }).error) {
+    return String((data as { error: unknown }).error)
+  }
+
+  const ctx = (error as { context?: Response })?.context
+  if (ctx && typeof ctx.json === 'function') {
+    try {
+      const body = await ctx.json()
+      if (body?.error) return String(body.error)
+      if (body?.message) return String(body.message)
+      if (typeof body === 'string' && body.trim()) return body
+    } catch {
+      try {
+        const text = await ctx.text()
+        if (text.trim()) return text.slice(0, 300)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  if (error instanceof Error && error.message) return error.message
+  return 'Dhan sync failed'
+}
+
 export async function syncDhanPositions(
   brokerId: string,
   opts?: { includeUnrealized?: boolean }
@@ -23,7 +49,7 @@ export async function syncDhanPositions(
   })
 
   if (error) {
-    throw new Error(error.message || 'Dhan sync failed')
+    throw new Error(await readFunctionError(error, data))
   }
 
   if (data?.error) {
