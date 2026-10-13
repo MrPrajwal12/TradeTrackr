@@ -83,12 +83,22 @@ export function BrokersPage() {
       return
     }
 
-    const brokerData = isManual
+    const brokerData: {
+      user_id: string
+      name: string
+      type: string
+      connection_method: 'api' | 'csv_import' | 'manual'
+      account_id?: string
+      api_key?: string
+      access_token?: string
+      api_secret?: string
+      is_active: boolean
+    } = isManual
       ? {
           user_id: user.id,
           name: manualName || 'My Broker',
           type: 'manual',
-          connection_method: 'manual' as const,
+          connection_method: 'manual',
           account_id: manualAccountId || '',
           is_active: true,
         }
@@ -97,7 +107,7 @@ export function BrokersPage() {
             user_id: user.id,
             name: 'Dhan',
             type: 'dhan',
-            connection_method: 'api' as const,
+            connection_method: 'api',
             account_id: clientId.trim(),
             api_key: clientId.trim(),
             access_token: accessToken.trim(),
@@ -108,7 +118,7 @@ export function BrokersPage() {
             user_id: user.id,
             name: selectedBroker?.name || '',
             type: selectedBroker?.type || 'other',
-            connection_method: (selectedBroker?.method || 'manual') as 'api' | 'csv_import' | 'manual',
+            connection_method: selectedBroker?.method || 'manual',
             api_key: apiKey,
             api_secret: apiSecret,
             is_active: true,
