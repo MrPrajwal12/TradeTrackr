@@ -151,8 +151,14 @@ export function BrokersPage() {
     setSyncingId(broker.id)
     try {
       const result = await syncDhanPositions(broker.id)
+      const via =
+        result.source === 'trades'
+          ? ' via trades'
+          : result.source === 'empty'
+            ? ' — no positions/trades today'
+            : ''
       toast.success(
-        `Dhan synced for ${result.date}: ${formatCurrency(result.actual_pl)} (realized ${formatCurrency(result.realized)}, unrealized ${formatCurrency(result.unrealized)})`
+        `Dhan ${result.date}: ${formatCurrency(result.actual_pl)}${via} (R ${formatCurrency(result.realized)} / U ${formatCurrency(result.unrealized)})`
       )
       await loadBrokers()
     } catch (e) {

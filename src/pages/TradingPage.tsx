@@ -187,8 +187,14 @@ export function TradingPage() {
     setSyncingDhan(true)
     try {
       const result = await syncDhanPositions(dhanBrokerId)
+      const via =
+        result.source === 'trades'
+          ? ' (from trade book)'
+          : result.source === 'empty'
+            ? ' (no Dhan positions/trades today)'
+            : ''
       toast.success(
-        `Dhan → ${result.date}: ${formatCurrency(result.actual_pl)} saved to journal`
+        `Dhan → ${result.date}: ${formatCurrency(result.actual_pl)}${via}`
       )
       await loadEntries()
     } catch (e) {

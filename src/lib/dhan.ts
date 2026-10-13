@@ -7,8 +7,10 @@ export type DhanSyncResult = {
   realized: number
   unrealized: number
   positions: number
+  trades?: number
   open_positions: number
   include_unrealized: boolean
+  source?: 'positions' | 'trades' | 'empty'
 }
 
 async function readFunctionError(error: unknown, data: unknown): Promise<string> {

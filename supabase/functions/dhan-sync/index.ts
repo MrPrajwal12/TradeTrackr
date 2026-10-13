@@ -1,4 +1,4 @@
-// Sync today's P/L from DhanHQ positions into trade_entries.
+// Sync today's P/L from DhanHQ positions (+ trades fallback) into trade_entries.
 // Deploy: supabase functions deploy dhan-sync
 //
 // Body: { broker_id: string, include_unrealized?: boolean }
@@ -24,6 +24,16 @@ type DhanPosition = {
   unrealizedProfit?: number
   productType?: string
   positionType?: string
+  multiplier?: number
+}
+
+type DhanTrade = {
+  tradingSymbol?: string
+  securityId?: string
+  productType?: string
+  transactionType?: string
+  tradedQuantity?: number
+  tradedPrice?: number
 }
 
 const corsHeaders: Record<string, string> = {
@@ -53,6 +63,81 @@ function weekdayIST(isoDate: string): string {
   const [y, m, d] = isoDate.split("-").map(Number)
   const utc = new Date(Date.UTC(y, m - 1, d, 6, 30))
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][utc.getUTCDay()]
+}
+
+function dhanHeaders(accessToken: string, clientId: string) {
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "access-token": accessToken,
+    "client-id": clientId,
+  }
+}
+
+function asArray<T>(payload: unknown): T[] {
+  if (Array.isArray(payload)) return payload as T[]
+  if (payload && typeof payload === "object") {
+    const obj = payload as Record<string, unknown>
+    if (Array.isArray(obj.data)) return obj.data as T[]
+    if (obj.data && typeof obj.data === "object") {
+      const nested = obj.data as Record<string, unknown>
+      if (Array.isArray(nested.data)) return nested.data as T[]
+    }
+  }
+  return []
+}
+
+/** Average-cost realized P/L from today's trade book (when positions are empty/flat). */
+function realizedFromTrades(trades: DhanTrade[]): {
+  realized: number
+  symbols: string[]
+} {
+  type Bucket = {
+    symbol: string
+    buyQty: number
+    sellQty: number
+    buyValue: number
+    sellValue: number
+  }
+  const map = new Map<string, Bucket>()
+
+  for (const t of trades) {
+    const qty = Number(t.tradedQuantity) || 0
+    const price = Number(t.tradedPrice) || 0
+    if (qty <= 0) continue
+    const key = `${t.securityId || t.tradingSymbol || "unknown"}|${t.productType || ""}`
+    const bucket =
+      map.get(key) ||
+      ({
+        symbol: t.tradingSymbol || t.securityId || key,
+        buyQty: 0,
+        sellQty: 0,
+        buyValue: 0,
+        sellValue: 0,
+      } satisfies Bucket)
+    const side = String(t.transactionType || "").toUpperCase()
+    if (side === "BUY") {
+      bucket.buyQty += qty
+      bucket.buyValue += qty * price
+    } else if (side === "SELL") {
+      bucket.sellQty += qty
+      bucket.sellValue += qty * price
+    }
+    map.set(key, bucket)
+  }
+
+  let realized = 0
+  const symbols: string[] = []
+  for (const b of map.values()) {
+    if (b.buyQty <= 0 || b.sellQty <= 0) continue
+    const buyAvg = b.buyValue / b.buyQty
+    const sellAvg = b.sellValue / b.sellQty
+    const matched = Math.min(b.buyQty, b.sellQty)
+    realized += (sellAvg - buyAvg) * matched
+    symbols.push(b.symbol)
+  }
+
+  return { realized: parseFloat(realized.toFixed(2)), symbols }
 }
 
 Deno.serve(async (req) => {
@@ -98,7 +183,6 @@ Deno.serve(async (req) => {
   if (!brokerId) return json({ error: "broker_id is required" }, 400)
   const includeUnrealized = body.include_unrealized !== false
 
-  // Use the caller's JWT + RLS (avoids service-role misconfig returning empty rows)
   const { data: broker, error: brokerErr } = await userClient
     .from("brokers")
     .select(
@@ -126,8 +210,7 @@ Deno.serve(async (req) => {
   }
 
   const typeName = `${broker.type || ""} ${broker.name || ""}`.toLowerCase()
-  const isDhan = typeName.includes("dhan")
-  if (!isDhan) {
+  if (!typeName.includes("dhan")) {
     return json(
       {
         error: "This sync endpoint only supports Dhan",
@@ -153,21 +236,18 @@ Deno.serve(async (req) => {
     return json(
       {
         error:
-          "Dhan Access Token looks too short. Paste the full token from web.dhan.co (Profile → DhanHQ APIs), not the Client ID.",
+          "Dhan Access Token looks too short. Paste the full token from web.dhan.co (Profile → DhanHQ APIs).",
         token_length: accessToken.length,
       },
       400
     )
   }
 
+  const headers = dhanHeaders(accessToken, clientId)
+
   const dhanRes = await fetch("https://api.dhan.co/v2/positions", {
     method: "GET",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "access-token": accessToken,
-      "client-id": clientId,
-    },
+    headers,
   })
 
   const dhanText = await dhanRes.text()
@@ -179,7 +259,7 @@ Deno.serve(async (req) => {
       broker_id: brokerId,
       status: "failed",
       records_imported: 0,
-      error_message: `Invalid JSON from Dhan (${dhanRes.status})`,
+      error_message: `Invalid JSON from Dhan positions (${dhanRes.status})`,
     })
     return json(
       {
@@ -210,11 +290,7 @@ Deno.serve(async (req) => {
     )
   }
 
-  const positions: DhanPosition[] = Array.isArray(dhanJson)
-    ? (dhanJson as DhanPosition[])
-    : Array.isArray((dhanJson as { data?: DhanPosition[] })?.data)
-      ? (dhanJson as { data: DhanPosition[] }).data
-      : []
+  const positions = asArray<DhanPosition>(dhanJson)
 
   let realized = 0
   let unrealized = 0
@@ -224,6 +300,42 @@ Deno.serve(async (req) => {
     unrealized += Number(p.unrealizedProfit) || 0
     if ((p.netQty || 0) !== 0 && p.tradingSymbol) {
       openSymbols.push(p.tradingSymbol)
+    }
+  }
+
+  let source: "positions" | "trades" | "empty" = "positions"
+  let tradesCount = 0
+  let tradeSymbols: string[] = []
+
+  // When flat / empty positions book, fall back to today's trade book P/L
+  if (positions.length === 0 || (realized === 0 && unrealized === 0)) {
+    const tradesRes = await fetch("https://api.dhan.co/v2/trades", {
+      method: "GET",
+      headers,
+    })
+    const tradesText = await tradesRes.text()
+    if (tradesRes.ok) {
+      let tradesJson: unknown = []
+      try {
+        tradesJson = tradesText ? JSON.parse(tradesText) : []
+      } catch {
+        tradesJson = []
+      }
+      const trades = asArray<DhanTrade>(tradesJson)
+      tradesCount = trades.length
+      if (trades.length > 0) {
+        const fromTrades = realizedFromTrades(trades)
+        // Prefer trade-book realized when positions are empty or also zero
+        if (positions.length === 0 || Math.abs(realized) < 0.0001) {
+          realized = fromTrades.realized
+          source = "trades"
+          tradeSymbols = fromTrades.symbols
+        }
+      } else if (positions.length === 0) {
+        source = "empty"
+      }
+    } else if (positions.length === 0) {
+      source = "empty"
     }
   }
 
@@ -243,13 +355,23 @@ Deno.serve(async (req) => {
   const monthlyTarget = Number(profile?.monthly_target) || 20920
   const dailyTarget = parseFloat((monthlyTarget / 22).toFixed(2))
 
+  const symbolHint =
+    openSymbols.length > 0
+      ? `open: ${openSymbols.slice(0, 8).join(", ")}${openSymbols.length > 8 ? "…" : ""}`
+      : tradeSymbols.length > 0
+        ? `traded: ${tradeSymbols.slice(0, 8).join(", ")}${tradeSymbols.length > 8 ? "…" : ""}`
+        : source === "empty"
+          ? "no positions or trades today on Dhan"
+          : "no open positions"
+
   const noteParts = [
-    "Synced from Dhan positions",
+    source === "trades"
+      ? "Synced from Dhan trade book"
+      : "Synced from Dhan positions",
     `realized ${realized.toFixed(2)}`,
     includeUnrealized ? `unrealized ${unrealized.toFixed(2)}` : null,
-    openSymbols.length
-      ? `open: ${openSymbols.slice(0, 8).join(", ")}${openSymbols.length > 8 ? "…" : ""}`
-      : "no open positions",
+    `${positions.length} pos / ${tradesCount} trades`,
+    symbolHint,
   ].filter(Boolean)
 
   const { error: upsertErr } = await userClient.from("trade_entries").upsert(
@@ -298,7 +420,9 @@ Deno.serve(async (req) => {
     realized: parseFloat(realized.toFixed(2)),
     unrealized: parseFloat(unrealized.toFixed(2)),
     positions: positions.length,
+    trades: tradesCount,
     open_positions: openSymbols.length,
     include_unrealized: includeUnrealized,
+    source,
   })
 })
